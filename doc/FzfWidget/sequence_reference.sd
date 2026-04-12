@@ -1,0 +1,118 @@
+# Gtk3::FzfWidget — interaction sequence
+
+participant "Caller" as caller
+participant "FzfWidget" as widget
+participant "Process" as proc
+participant "fzf" as fzf
+participant "Client" as client
+participant "GTK main loop" as gtk
+
+caller -> widget : new(items, config)
+widget -> proc : new(items, config)
+proc -> fzf : fork + exec fzf --listen=PORT
+proc -> fzf : write items to stdin pipe
+widget -> gtk : show_all()
+
+loop start_delay_ms {
+    gtk -> gtk : idle
+}
+
+gtk -> widget : realize signal
+widget -> client : new(port)
+widget -> widget : _on_process_ready()
+widget -> gtk : grab_focus(entry)
+
+opt initial_selection {
+    widget -> proc : post_action toggle(idx) * N
+}
+
+widget -> caller : on_ready(widget)
+
+loop "user interaction" {
+    alt "query change" {
+        gtk -> widget : entry changed
+        widget -> widget : "debounce timer (_debounce_ms)"
+        widget -> proc : "post_action change-query(text)"
+        widget -> client : "get_state /?limit=400&offset=0"
+        client -> fzf : "GET /?limit=400&offset=0"
+        fzf -> client : "JSON state + matches[]"
+
+        opt "matchCount > 400" {
+            loop "offset < matchCount" {
+                widget -> client : get_more_matches(offset)
+                client -> fzf : "GET /?limit=400&offset=N"
+                fzf -> client : "matches[]"
+            }
+        }
+
+        widget -> widget : "update cached_matches local_pos local_selected"
+        widget -> widget : "_update_list — rebuild ListStore"
+        widget -> caller : "on_query_change(widget, query)"
+    }
+
+    else "navigate down/up" {
+        gtk -> widget : "key-press Down/Up"
+        widget -> widget : update local_pos
+        widget -> widget : "_redraw_rows old_pos new_pos"
+        widget -> proc : "post_action down/up"
+        note widget : "no GET — display from cache"
+    }
+
+    else "tab toggle" {
+        gtk -> widget : key-press Tab
+        widget -> widget : update local_selected
+        widget -> widget : update local_pos
+        widget -> widget : _redraw_rows
+        widget -> proc : post_action toggle
+        widget -> proc : post_action down
+        widget -> caller : "on_selection_change(widget, selections)"
+        note widget : "no GET — display from cache"
+    }
+
+    else "mouse hover" {
+        gtk -> widget : motion-notify-event
+        widget -> widget : "get_path_at_pos(x, y)"
+        widget -> caller : "on_hover(widget, text, index)"
+        caller -> widget : info string
+        widget -> widget : "info_label set_text"
+    }
+}
+
+loop "every poll_ms" {
+    gtk -> widget : bg_poll_timer fires
+    widget -> client : get_state
+    client -> fzf : "GET /?limit=400&offset=0"
+    fzf -> client : JSON state
+
+    opt "matchCount or totalCount changed" {
+        widget -> widget : "_refresh — full rebuild"
+    }
+}
+
+loop "every DEATH_POLL_MS" {
+    gtk -> widget : death_watch timer fires
+    widget -> proc : "waitpid WNOHANG"
+
+    opt "fzf crashed" {
+        proc -> widget : _on_child_exit
+        widget -> proc : "start (restart)"
+
+        opt "restart_count > MAX_RESTARTS" {
+            widget -> caller : "on_error(widget, message)"
+        }
+    }
+}
+
+alt "user confirms" {
+    gtk -> widget : "Return or Ctrl+O or OK button"
+    widget -> widget : "stop bg_poll death_watch"
+    widget -> proc : "stop — kill fzf"
+    widget -> widget : "collect sel from cached_matches + local_selected"
+    widget -> caller : "on_confirm(widget, selections, query)"
+}
+
+else "user cancels" {
+    gtk -> widget : Escape or Close button
+    widget -> caller : on_cancel(widget)
+    widget -> gtk : window destroy
+}

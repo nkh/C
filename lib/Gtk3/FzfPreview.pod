@@ -1,0 +1,435 @@
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+Gtk3::FzfPreview - Composite fuzzy-search and file preview widget
+
+=head1 VERSION
+
+0.01
+
+=head1 SYNOPSIS
+
+    use Gtk3 -init ;
+    use Gtk3::FzfPreview ;
+
+    Gtk3->init() ;
+
+    my $win = Gtk3::Window->new('toplevel') ;
+    $win->set_default_size(1000, 600) ;
+    $win->signal_connect(destroy => sub { Gtk3->main_quit() }) ;
+
+    my $fp = Gtk3::FzfPreview->new(
+        items        => \@files,
+        item_to_file => sub { $_[0] },
+        config =>
+            {
+            resizable => 1,
+            fzf_width => 0.35,
+            fzf =>
+                {
+                theme => 'dark',
+                multi => 1,
+                on_confirm => sub
+                    {
+                    my ($self, $sel, $query) = @_ ;
+                    print "$_->[0]\n" for @$sel ;
+                    Gtk3->main_quit() ;
+                    },
+                on_cancel => sub { Gtk3->main_quit() },
+                },
+            preview =>
+                {
+                theme    => 'dark',
+                fit_mode => 'height',
+                },
+            },
+        ) ;
+
+    $win->add($fp) ;
+    $win->show_all() ;
+    Gtk3->main() ;
+
+=head1 DESCRIPTION
+
+C<Gtk3::FzfPreview> combines a L<Gtk3::FzfWidget> on the left with a
+L<Gtk3::PreviewPane> on the right inside a horizontal L<Gtk3::Box>.
+Moving the cursor in the fuzzy list automatically loads the corresponding
+file in the preview pane.
+
+The widget resolves each list item to a file path via the C<item_to_file>
+argument.  Items whose text is itself a readable file path need no resolver.
+
+The two panes can be given a fixed width ratio or separated by a draggable
+handle.  Each pane can be hidden and shown at runtime with configurable
+keyboard shortcuts.
+
+=head1 CONSTRUCTOR
+
+=head2 new
+
+    my $fp = Gtk3::FzfPreview->new(
+        items        => \@items,
+        item_to_file => $resolver,
+        config       => \%config,
+        ) ;
+
+Creates and returns a new C<Gtk3::FzfPreview> instance.
+
+=head3 Constructor arguments
+
+=over 4
+
+=item items
+
+Arrayref of strings, or a coderef returning one.  Passed directly to
+the embedded L<Gtk3::FzfWidget>.
+
+=item item_to_file
+
+Controls how list item text is mapped to a file path for preview.
+Three forms are accepted:
+
+=over 4
+
+=item hashref
+
+C<{ item_text => '/path/to/file', ... }>. The item text is used as a
+lookup key.
+
+=item coderef
+
+Called as C<$resolver->($text, $original_index)>.  Must return a file path
+string or C<undef>.
+
+=item undef
+
+If the item text itself is a readable file or directory path it is used
+directly.  Otherwise no preview is shown for that item.
+
+=back
+
+=item config
+
+Hashref of configuration options.  See L</CONFIGURATION>.
+
+=back
+
+=head1 CONFIGURATION
+
+=head2 Layout
+
+=over 4
+
+=item resizable
+
+When true, a C<Gtk3::HPaned> drag handle separates the two panes.
+When false, the split is fixed at the C<fzf_width> fraction.
+
+Default: C<0>
+
+=item fzf_width
+
+Fractional width (0.0 to 1.0) allocated to the fzf list pane.  The
+remaining fraction goes to the preview pane.  When C<undef> the width
+is computed automatically from the average item length: items averaging
+over 40 characters get a 50/50 split; shorter items get 30/70.
+
+Default: C<undef> (auto)
+
+=item hide_fzf_key
+
+Key binding that toggles visibility of the fzf list pane.  Format is the
+same as FzfWidget keybindings: C<'modifier+key'> or C<'key'>.
+
+Default: C<'ctrl+p'>
+
+=item hide_preview_key
+
+Key binding that toggles visibility of the preview pane.
+
+Default: C<'ctrl+o'>
+
+=item show_fzf
+
+Initial visibility of the fzf list pane.
+
+Default: C<1>
+
+=item show_preview
+
+Initial visibility of the preview pane.
+
+Default: C<1>
+
+=back
+
+=head2 Sub-widget configuration
+
+=over 4
+
+=item fzf
+
+Hashref of L<Gtk3::FzfWidget> configuration options passed directly to the
+embedded widget.  All FzfWidget config keys are valid here.  The
+C<on_confirm> and C<on_cancel> keys inside this hashref are intercepted
+and wrapped so that the top-level C<on_confirm> and C<on_cancel> callbacks
+on C<Gtk3::FzfPreview> are also fired.
+
+=item preview
+
+Hashref of L<Gtk3::PreviewPane> configuration options passed directly to
+the embedded pane.  All PreviewPane config keys are valid here.
+
+=back
+
+=head2 Callbacks
+
+=over 4
+
+=item on_confirm
+
+Called when the user confirms a selection.
+
+    on_confirm => sub
+        {
+        my ($fp_widget, $selections, $query) = @_ ;
+        print "$_->[0]\n" for @$selections ;
+        }
+
+Arguments match those of L<Gtk3::FzfWidget>'s C<on_confirm>:
+C<$selections> is an arrayref of C<[$text, $original_index]> pairs,
+C<$query> is the current search string.
+
+=item on_cancel
+
+Called when the user cancels.
+
+    on_cancel => sub
+        {
+        my ($fp_widget) = @_ ;
+        }
+
+=item on_preview
+
+Called before each file is loaded into the preview pane.  Use this to
+override the path or inject extra label text.
+
+    on_preview => sub
+        {
+        my ($fp_widget, $path, $item_text, $original_index) = @_ ;
+        my @st    = stat($path) ;
+        my $extra = @st ? sprintf('%s  %d bytes', $path, $st[7]) : $path ;
+        return ($path, $extra) ;
+        }
+
+Must return a two-element list C<($path, $extra_text)>.  C<$path>
+replaces the resolved path for this load.  C<$extra_text> is passed to
+the preview pane's extra label.  Return C<($path, undef)> to hide the
+label.
+
+=back
+
+=head1 PUBLIC METHODS
+
+=head2 fzf_widget
+
+    my $w = $fp->fzf_widget() ;
+
+Returns the embedded L<Gtk3::FzfWidget> instance.  Use this to call any
+public FzfWidget method at runtime, for example:
+
+    $fp->fzf_widget()->set_query('foo') ;
+    $fp->fzf_widget()->reload_items(\@new_items) ;
+
+=head2 preview_pane
+
+    my $p = $fp->preview_pane() ;
+
+Returns the embedded L<Gtk3::PreviewPane> instance.  Use this to call any
+public PreviewPane method at runtime, for example:
+
+    $fp->preview_pane()->load('/etc/hosts', 'system hosts file') ;
+    my $mode = $fp->preview_pane()->get_current_mode() ;
+
+=head1 EXAMPLES
+
+=head2 File browser in a plain window
+
+    use Gtk3 -init ;
+    use Gtk3::FzfPreview ;
+    use File::Basename qw(basename) ;
+
+    Gtk3->init() ;
+
+    my $dir   = $ARGV[0] // '.' ;
+    my @files = map { "$dir/$_" }
+        sort grep { -f "$dir/$_" } do
+            {
+            opendir my $dh, $dir or die $! ;
+            readdir $dh ;
+            } ;
+
+    my $win = Gtk3::Window->new('toplevel') ;
+    $win->set_default_size(1000, 600) ;
+    $win->signal_connect(destroy => sub { Gtk3->main_quit() }) ;
+
+    my $fp = Gtk3::FzfPreview->new(
+        items        => \@files,
+        item_to_file => sub { $_[0] },
+        config =>
+            {
+            resizable => 1,
+            fzf_width => 0.3,
+            fzf =>
+                {
+                theme        => 'dark',
+                transform_fn => sub { basename($_[0]) },
+                on_confirm   => sub
+                    {
+                    my ($w, $sel, $query) = @_ ;
+                    print "$_->[0]\n" for @$sel ;
+                    Gtk3->main_quit() ;
+                    },
+                on_cancel    => sub { Gtk3->main_quit() },
+                },
+            preview =>
+                {
+                theme    => 'dark',
+                fit_mode => 'height',
+                },
+            on_preview => sub
+                {
+                my ($w, $path, $text, $idx) = @_ ;
+                my @st    = stat($path) ;
+                my $extra = @st
+                    ? sprintf('%s  %d bytes', $path, $st[7])
+                    : $path ;
+                return ($path, $extra) ;
+                },
+            },
+        ) ;
+
+    $win->add($fp) ;
+    $win->show_all() ;
+    Gtk3->main() ;
+
+=head2 Embedded in a dialog launched from a button
+
+    use Gtk3 -init ;
+    use Gtk3::FzfPreview ;
+
+    Gtk3->init() ;
+
+    my $win = Gtk3::Window->new('toplevel') ;
+    $win->set_default_size(500, 300) ;
+    $win->signal_connect(destroy => sub { Gtk3->main_quit() }) ;
+
+    my $btn = Gtk3::Button->new('Pick a file') ;
+    $btn->signal_connect(clicked => sub
+        {
+        my $dialog = Gtk3::Dialog->new() ;
+        $dialog->set_default_size(1000, 600) ;
+        $dialog->set_modal(1) ;
+
+        my $fp = Gtk3::FzfPreview->new(
+            items        => \@files,
+            item_to_file => sub { $_[0] },
+            config =>
+                {
+                resizable  => 1,
+                fzf_width  => 0.35,
+                fzf =>
+                    {
+                    theme      => 'dark',
+                    on_confirm => sub
+                        {
+                        my ($w, $sel, $query) = @_ ;
+                        print "$_->[0]\n" for @$sel ;
+                        $dialog->destroy() ;
+                        },
+                    on_cancel  => sub { $dialog->destroy() },
+                    },
+                preview => { theme => 'dark' },
+                },
+            ) ;
+
+        my $content = $dialog->get_content_area() ;
+        $content->set_spacing(0) ;
+        $fp->set_vexpand(1) ;
+        $content->pack_start($fp, 1, 1, 0) ;
+
+        $dialog->show_all() ;
+        $dialog->run() ;
+        }) ;
+
+    $win->add($btn) ;
+    $win->show_all() ;
+    Gtk3->main() ;
+
+=head2 Coderef item resolver
+
+    my $fp = Gtk3::FzfPreview->new(
+        items        => [qw(README CHANGES LICENSE)],
+        item_to_file => sub
+            {
+            my ($text, $idx) = @_ ;
+            return "/path/to/project/$text" ;
+            },
+        config =>
+            {
+            fzf     => { theme => 'dark', on_confirm => ..., on_cancel => ... },
+            preview => { theme => 'dark' },
+            },
+        ) ;
+
+=head2 Hashref item resolver
+
+    my $fp = Gtk3::FzfPreview->new(
+        items        => ['System log', 'Host file', 'Timezone'],
+        item_to_file =>
+            {
+            'System log' => '/var/log/syslog',
+            'Host file'  => '/etc/hosts',
+            'Timezone'   => '/etc/timezone',
+            },
+        config =>
+            {
+            fzf     => { theme => 'dark', on_confirm => ..., on_cancel => ... },
+            preview => { theme => 'dark' },
+            },
+        ) ;
+
+=head1 KEYBOARD SHORTCUTS
+
+The following shortcuts are available globally when the widget has keyboard
+focus.  Both keys can be rebound via C<hide_fzf_key> and
+C<hide_preview_key> in the config.
+
+    Ctrl+P    Toggle fzf list pane visibility (default hide_fzf_key)
+    Ctrl+O    Toggle preview pane visibility  (default hide_preview_key)
+
+All FzfWidget and PreviewPane keyboard bindings remain active in their
+respective panes.  See L<Gtk3::FzfWidget> and L<Gtk3::PreviewPane> for
+the full keyboard references.
+
+=head1 DEPENDENCIES
+
+L<Gtk3>, L<Glib>, L<Gtk3::FzfWidget>, L<Gtk3::PreviewPane>,
+L<File::Basename>, L<List::Util>
+
+=head1 SEE ALSO
+
+L<Gtk3::FzfWidget>, L<Gtk3::PreviewPane>
+
+=head1 AUTHOR
+
+nkh
+
+=head1 LICENSE
+
+Artistic License 2.0
+
+=cut

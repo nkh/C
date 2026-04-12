@@ -1,0 +1,11 @@
+^\.git/
+^\.gitignore
+^_build/
+^blib/
+^Build$
+^Makefile$
+~$
+\.bak$
+\.swp$
+^MYMETA\.
+^Gtk3-FzfWidget-.*\.tar\.gz$

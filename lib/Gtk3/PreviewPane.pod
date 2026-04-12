@@ -1,0 +1,319 @@
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+Gtk3::PreviewPane - GTK3 widget for previewing text files and images
+
+=head1 VERSION
+
+0.01
+
+=head1 SYNOPSIS
+
+    use Gtk3 -init ;
+    use Gtk3::PreviewPane ;
+
+    Gtk3->init() ;
+
+    my $win = Gtk3::Window->new('toplevel') ;
+    $win->signal_connect(destroy => sub { Gtk3->main_quit() }) ;
+
+    my $pane = Gtk3::PreviewPane->new(
+        config =>
+            {
+            theme      => 'dark',
+            font_family => 'Monospace',
+            font_size   => 13,
+            fit_mode    => 'height',
+            },
+        ) ;
+
+    $pane->load('/path/to/file.txt') ;
+
+    $win->add($pane) ;
+    $win->show_all() ;
+    Gtk3->main() ;
+
+=head1 DESCRIPTION
+
+C<Gtk3::PreviewPane> is a GTK3 L<Gtk3::Box> subclass that displays text
+files and images side by side in the same widget.  Switching between modes
+is automatic based on file extension.
+
+Text mode renders the file content in a scrollable C<GtkTextView> with
+vim-like keyboard navigation.  Image mode renders the image in a
+C<GtkDrawingArea> with zoom and fit controls.
+
+An optional extra label appears above or below the content area and is
+shown only when text is passed to L</load> or L</set_extra_text>.
+
+A status bar at the bottom shows the file name and line count for text
+files, or the file name, pixel dimensions, and zoom percentage for images.
+
+=head2 Supported file types
+
+The mode is selected by file extension (case-insensitive).
+
+Image extensions: C<png jpg jpeg gif bmp webp tiff tif svg ico>
+
+Text extensions: C<pl pm py rb sh bash zsh js ts c h cpp rs go java
+txt md rst log conf ini yaml yml toml json xml html css>
+
+Any extension not in either list is treated as text.
+
+=head1 CONSTRUCTOR
+
+=head2 new
+
+    my $pane = Gtk3::PreviewPane->new(config => \%config) ;
+
+Creates and returns a new C<Gtk3::PreviewPane>.  All configuration keys
+are optional.
+
+=head1 CONFIGURATION
+
+All keys are passed in the C<config> hashref to L</new>.
+
+=head2 Appearance
+
+=over 4
+
+=item theme
+
+Built-in color theme.  One of C<'dark'>, C<'light'>, C<'normal'>.
+C<'normal'> uses the GTK3 default colors with no overrides.
+
+Default: C<'dark'>
+
+=item font_family
+
+Font family used for text mode display.
+
+Default: C<'Monospace'>
+
+=item font_size
+
+Font size in points used for text mode display.
+
+Default: C<13>
+
+=item show_status
+
+When true, the status bar is shown at the bottom.
+
+Default: C<1>
+
+=item extra_position
+
+Position of the extra label relative to the content area.
+One of C<'top'> or C<'bottom'>.
+
+Default: C<'top'>
+
+=back
+
+=head2 Image display
+
+=over 4
+
+=item fit_mode
+
+Controls how images are scaled on initial load and on window resize.
+
+=over 4
+
+=item C<'height'>
+
+Scale the image so its height fills the available area.  This is the
+default and works well for tall images and side-by-side layouts.
+
+=item C<'width'>
+
+Scale the image so its width fills the available area.
+
+=item C<'none'>
+
+No automatic scaling.  The image is shown at the current zoom level.
+
+=back
+
+Default: C<'height'>
+
+=item zoom_factor
+
+Multiplier applied on each zoom-in or zoom-out step.  Values slightly above
+1.0 give fine-grained zoom; larger values (e.g. 2.0) give coarser steps.
+
+Default: C<1.3>
+
+=back
+
+=head2 Keybindings
+
+    keybindings =>
+        {
+        scroll_down  => 'j',
+        scroll_up    => 'k',
+        page_down    => 'ctrl+d',
+        page_up      => 'ctrl+u',
+        goto_top     => 'g',
+        goto_bottom  => 'shift+g',
+        }
+
+Each value is a keybinding string of the form C<'modifier+key'> or just
+C<'key'>.  The hashref is merged over the defaults so only the keys you
+provide are overridden.
+
+Default keybindings are shown in the table above.
+
+Image zoom keys (C<+>, C<->, C<0>, C<f>) are fixed and cannot be rebound.
+
+=head1 PUBLIC METHODS
+
+=head2 load
+
+    $pane->load($path) ;
+    $pane->load($path, $extra_text) ;
+
+Loads and displays the file at C<$path>.  The mode (text or image) is
+chosen automatically from the file extension.
+
+If C<$extra_text> is provided it is shown in the extra label above or
+below the content.  Pass C<undef> to hide the label.
+
+If C<$path> is not readable the content area is cleared and an error
+message is shown in the status bar.
+
+=head2 set_extra_text
+
+    $pane->set_extra_text($text) ;
+    $pane->set_extra_text(undef) ;
+
+Sets the extra label text without reloading the file.  Pass C<undef> to
+hide the label.
+
+=head2 clear_extra_text
+
+    $pane->clear_extra_text() ;
+
+Equivalent to C<set_extra_text(undef)>.
+
+=head2 get_current_path
+
+    my $path = $pane->get_current_path() ;
+
+Returns the path of the file currently loaded, or C<undef> if nothing has
+been loaded yet.
+
+=head2 get_current_mode
+
+    my $mode = $pane->get_current_mode() ;
+
+Returns C<'text'>, C<'image'>, or C<undef> when no file is loaded.
+
+=head2 get_zoom_level
+
+    my $zoom = $pane->get_zoom_level() ;
+
+Returns the current zoom level as a floating-point multiplier (1.0 = 100%).
+Only meaningful in image mode.
+
+=head1 KEYBOARD REFERENCE
+
+=head2 Text mode
+
+    j / k           Scroll one line down / up
+    Ctrl+d          Scroll half a page down
+    Ctrl+u          Scroll half a page up
+    g               Jump to the top of the file
+    G (Shift+g)     Jump to the bottom of the file
+
+All of the above can be rebound via C<keybindings> in the config.
+
+=head2 Image mode
+
+    +  or  =        Zoom in
+    -               Zoom out
+    0               Reset zoom to 100%
+    f               Fit image to the available height
+
+Image zoom keys are fixed and cannot be rebound.
+
+=head1 EXAMPLES
+
+=head2 Standalone text viewer
+
+    use Gtk3 -init ;
+    use Gtk3::PreviewPane ;
+
+    Gtk3->init() ;
+
+    my $win = Gtk3::Window->new('toplevel') ;
+    $win->set_default_size(700, 500) ;
+    $win->signal_connect(destroy => sub { Gtk3->main_quit() }) ;
+
+    my $pane = Gtk3::PreviewPane->new(
+        config =>
+            {
+            theme      => 'dark',
+            show_status => 1,
+            },
+        ) ;
+
+    $pane->load($ARGV[0] // '/etc/hostname') ;
+
+    $win->add($pane) ;
+    $win->show_all() ;
+    Gtk3->main() ;
+
+=head2 Image viewer with fit-to-width
+
+    my $pane = Gtk3::PreviewPane->new(
+        config =>
+            {
+            theme    => 'light',
+            fit_mode => 'width',
+            },
+        ) ;
+
+    $pane->load('/path/to/photo.jpg') ;
+
+=head2 Extra label above content
+
+    $pane->load('/var/log/syslog', '/var/log/syslog  —  read-only') ;
+
+=head2 Custom keybindings
+
+    my $pane = Gtk3::PreviewPane->new(
+        config =>
+            {
+            theme       => 'dark',
+            keybindings =>
+                {
+                scroll_down => 'n',
+                scroll_up   => 'p',
+                goto_top    => 'ctrl+home',
+                goto_bottom => 'ctrl+end',
+                },
+            },
+        ) ;
+
+=head1 DEPENDENCIES
+
+L<Gtk3>, L<Glib>, L<File::Basename>, L<Encode>, L<POSIX>
+
+=head1 SEE ALSO
+
+L<Gtk3::FzfWidget>, L<Gtk3::FzfPreview>
+
+=head1 AUTHOR
+
+nkh
+
+=head1 LICENSE
+
+Artistic License 2.0
+
+=cut

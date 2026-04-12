@@ -1,0 +1,41 @@
+# Gtk3::FzfWidget — overview
+
+participant "Your application" as app
+participant "FzfWidget" as widget
+participant "fzf" as fzf
+participant "User" as user
+
+app -> widget : new(items, config)
+widget -> fzf : start headless fzf with items
+widget -> app : on_ready — fzf loaded
+
+loop searching {
+    user -> widget : types query
+    widget -> fzf : send query
+    fzf -> widget : filtered matches
+    widget -> user : display updated list
+
+    opt hover {
+        user -> widget : move mouse over row
+        widget -> app : on_hover(text, index)
+        app -> widget : info string
+        widget -> user : show info below list
+    }
+
+    opt "toggle selection" {
+        user -> widget : Tab
+        widget -> user : item marked, cursor moves down
+        widget -> app : on_selection_change(selections)
+    }
+}
+
+alt confirm {
+    user -> widget : Return or OK
+    widget -> app : on_confirm(selections, query)
+    app -> app : use selected items
+}
+
+else cancel {
+    user -> widget : Escape or Close
+    widget -> app : on_cancel
+}

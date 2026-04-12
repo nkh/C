@@ -1,0 +1,11 @@
+Revision history for Gtk3-FzfWidget
+
+0.01  2026-03-21
+    - Initial release
+    - GTK3 widget embedding fzf as a headless fuzzy-search engine
+    - HTTP API communication via fzf --listen
+    - Single and multi-select modes
+    - ANSI color rendering
+    - Four built-in themes: normal, dark, solarized-dark, solarized-light
+    - Configurable colors, fonts, tab width
+    - fzfw command-line launcher

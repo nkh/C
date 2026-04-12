@@ -1,0 +1,454 @@
+#!/usr/bin/perl
+
+use strict ;
+use warnings ;
+use FindBin ;
+use lib "$FindBin::Bin/../lib" ;
+use Getopt::Long qw(:config no_ignore_case bundling) ;
+use Gtk3 -init ;
+use Gtk3::FzfWidget ;
+
+my $exit_code = 1 ;
+
+my %opt =
+	(
+	query          => '',
+	multi          => 0,
+	highlight      => 1,
+	ansi           => 0,
+	font_family    => 'Monospace',
+	font_size      => 15,
+	tab_width      => 8,
+	width          => 'half_screen',
+	height         => 'full_screen',
+	min_height     => undef,
+	max_height     => 'screen',
+	border_width   => 2,
+	poll_ms        => 100,
+	start_delay_ms => 100,
+	port           => undef,
+	theme          => 'normal',
+	print_query    => 0,
+	output_index   => 0,
+	null           => 0,
+	show_buttons   => 1,
+	show_status    => 1,
+	header         => undef,
+	info_height    => 60,
+	search_mode    => 'fuzzy',
+	wrap_cursor    => 0,
+	layout         => undef,
+	modal          => 0,
+	preview        => undef,
+	preview_cache  => 0,
+	preview_width  => 0.4,
+	) ;
+
+my %colors ;
+
+GetOptions(
+	'q|query=s'          => \$opt{query},
+	'm|multi'            => \$opt{multi},
+	'H|highlight!'       => \$opt{highlight},
+	'a|ansi'             => \$opt{ansi},
+	'f|font-family=s'    => \$opt{font_family},
+	's|font-size=i'      => \$opt{font_size},
+	't|tab-width=i'      => \$opt{tab_width},
+	'W|width=s'          => \$opt{width},
+	'h|height=s'         => \$opt{height},
+	'n|min-height=i'     => \$opt{min_height},
+	'x|max-height=s'     => \$opt{max_height},
+	'b|border-width=i'   => \$opt{border_width},
+	'p|poll-ms=i'        => \$opt{poll_ms},
+	'd|delay-ms=i'       => \$opt{start_delay_ms},
+	'P|port=i'           => \$opt{port},
+	'T|theme=s'          => \$opt{theme},
+	'Q|print-query'      => \$opt{print_query},
+	'I|output-index'     => \$opt{output_index},
+	'0|null'             => \$opt{null},
+	'no-buttons'         => sub { $opt{show_buttons} = 0 },
+	'no-status'          => sub { $opt{show_status}  = 0 },
+	'r|header=s'         => \$opt{header},
+	'info-height=i'      => \$opt{info_height},
+	'search-mode=s'      => \$opt{search_mode},
+	'wrap-cursor'        => \$opt{wrap_cursor},
+	'L|layout=s'         => \$opt{layout},
+	'M|modal'            => \$opt{modal},
+	'preview=s'          => \$opt{preview},
+	'preview-cache'      => \$opt{preview_cache},
+	'preview-width=f'    => \$opt{preview_width},
+	'c|color=s'          => sub
+		{
+		my ($k, $v) = split(/=/, $_[1], 2) ;
+		$colors{$k} = $v ;
+		},
+	'help'               => sub { print usage() ; exit 0 },
+	) or do { print usage() ; exit 1 } ;
+
+my @items ;
+my $sep = $opt{null} ? "\0" : "\n" ;
+
+if (!-t STDIN)
+	{
+	binmode(STDIN, ':raw') if $opt{ansi} || $opt{null} ;
+	local $/ = $opt{null} ? "\0" : "\n" ;
+	while (<STDIN>)
+		{
+		chomp ;
+		push @items, $_ ;
+		}
+	}
+elsif (@ARGV)
+	{
+	@items = @ARGV ;
+	}
+else
+	{
+	warn "No items: provide via stdin or as arguments\n" ;
+	exit 1 ;
+	}
+
+my @layout = $opt{layout} ? split(/,/, $opt{layout}) : () ;
+
+Gtk3->init() ;
+
+# ---- Preview setup -----------------------------------------------------------
+
+my $previewer   = undef ;
+my $preview_pane = undef ;
+my $tmpdir       = undef ;
+
+if (defined $opt{preview})
+	{
+	require Gtk3::PreviewPane ;
+	require Gtk3::FzfWidget::Previewer ;
+
+	$tmpdir = "/tmp/fzfw-$$" ;
+	mkdir $tmpdir or warn "cannot create tmpdir $tmpdir: $!" ;
+
+	$preview_pane = Gtk3::PreviewPane->new(
+		config =>
+			{
+			theme    => $opt{theme},
+			fit_mode => 'both',
+			},
+		) ;
+	}
+
+# ---- Window ------------------------------------------------------------------
+
+my $win ;
+
+if ($opt{modal})
+	{
+	$win = Gtk3::Dialog->new() ;
+	$win->set_title('fzfw') ;
+	$win->set_modal(1) ;
+	$win->signal_connect(destroy => sub { Gtk3->main_quit() }) ;
+	}
+else
+	{
+	$win = Gtk3::Window->new('toplevel') ;
+	$win->set_title('fzfw') ;
+	$win->signal_connect(destroy => sub { Gtk3->main_quit() }) ;
+	}
+
+# ---- Widget ------------------------------------------------------------------
+
+my $on_cursor_change = undef ;
+
+if (defined $opt{preview})
+	{
+	$on_cursor_change = sub
+		{
+		my ($w, $text, $index) = @_ ;
+
+		return unless $previewer ;
+
+		my $alloc = $preview_pane->get_allocation() ;
+		my $pw    = ref $alloc eq 'HASH' ? $alloc->{width}  : $alloc->width() ;
+		my $ph    = ref $alloc eq 'HASH' ? $alloc->{height} : $alloc->height() ;
+
+		# Build local_selected map: index => text for selected items
+		my %sel_map ;
+		my $sel = $w->get_selection() ;
+		if ($sel)
+			{
+			for my $pair (@$sel)
+				{
+				$sel_map{ $pair->[1] } = $pair->[0] ;
+				}
+			}
+
+		$previewer->invoke(
+			text           => $text,
+			index          => $index,
+			selected       => (exists $sel_map{$index} ? 1 : 0),
+			query          => $w->get_query(),
+			local_selected => \%sel_map,
+			preview_w      => $pw,
+			preview_h      => $ph,
+			) ;
+		} ;
+	}
+
+my $widget = eval
+	{
+	Gtk3::FzfWidget->new(
+		items  => \@items,
+		(@layout ? (layout => \@layout) : ()),
+		config =>
+			{
+			initial_query    => $opt{query},
+			highlight        => $opt{highlight},
+			multi            => $opt{multi},
+			ansi             => $opt{ansi},
+			font_family      => $opt{font_family},
+			font_size        => $opt{font_size},
+			tab_width        => $opt{tab_width},
+			width            => $opt{width},
+			height           => $opt{height},
+			min_height       => $opt{min_height},
+			max_height       => $opt{max_height},
+			border_width     => $opt{border_width},
+			poll_ms          => $opt{poll_ms},
+			start_delay_ms   => $opt{start_delay_ms},
+			port             => $opt{port},
+			theme            => $opt{theme},
+			show_buttons     => $opt{show_buttons},
+			show_status      => $opt{show_status},
+			header           => $opt{header},
+			info_height      => $opt{info_height},
+			search_mode      => $opt{search_mode},
+			wrap_cursor      => $opt{wrap_cursor},
+			colors           => \%colors,
+			on_cursor_change => $on_cursor_change,
+			on_confirm       => sub
+				{
+				my ($w, $sel, $query) = @_ ;
+				print "query\t$query$sep" if $opt{print_query} ;
+
+				for my $item (@$sel)
+					{
+					my $out = $opt{output_index} ? $item->[1] : $item->[0] ;
+					print "$out$sep" ;
+					}
+
+				$exit_code = 0 ;
+				Gtk3->main_quit() ;
+				},
+			on_cancel  => sub { $exit_code = 1 ; Gtk3->main_quit() },
+			on_error   => sub
+				{
+				warn "error: $_[1]\n" ;
+				$exit_code = 1 ;
+				Gtk3->main_quit() ;
+				},
+			},
+		) ;
+	} ;
+
+if ($@)
+	{
+	warn $@ ;
+	print usage() ;
+	exit 1 ;
+	}
+
+# Now that the widget exists and its port is known, create the previewer
+if (defined $opt{preview})
+	{
+	$previewer = Gtk3::FzfWidget::Previewer->new(
+		spec         => $opt{preview},
+		preview_pane => $preview_pane,
+		cache        => $opt{preview_cache},
+		tmpdir       => $tmpdir,
+		port         => $widget->{process} ? $widget->{process}{port} : undef,
+		colors       => $widget->{colors},
+		) ;
+	}
+
+# ---- Layout ------------------------------------------------------------------
+
+if (defined $opt{preview})
+	{
+	my $frac = $opt{preview_width} ;
+	my $paned = Gtk3::HPaned->new() ;
+	$paned->set_vexpand(1) ;
+	$paned->pack1($widget,       1, 0) ;
+	$paned->pack2($preview_pane, 1, 0) ;
+
+	# Set divider after realize
+	$paned->signal_connect(realize => sub
+		{
+		my $alloc = $paned->get_allocation() ;
+		my $w     = ref $alloc eq 'HASH' ? $alloc->{width} : $alloc->width() ;
+		$paned->set_position(int($w * (1 - $frac))) ;
+		}) ;
+
+	if ($opt{modal})
+		{
+		my $content = $win->get_content_area() ;
+		$content->set_spacing(0) ;
+		$paned->set_vexpand(1) ;
+		$content->pack_start($paned, 1, 1, 0) ;
+		}
+	else
+		{
+		$win->add($paned) ;
+		}
+	}
+else
+	{
+	if ($opt{modal})
+		{
+		my $content = $win->get_content_area() ;
+		$content->set_spacing(0) ;
+		$widget->set_vexpand(1) ;
+		$content->pack_start($widget, 1, 1, 0) ;
+		}
+	else
+		{
+		$win->add($widget) ;
+		}
+	}
+
+# ---- Cleanup on exit ---------------------------------------------------------
+
+$win->signal_connect(destroy => sub
+	{
+	$previewer->cleanup() if $previewer ;
+	}) ;
+
+# ---- Preview pane toggle (Ctrl+P) --------------------------------------------
+
+if (defined $opt{preview} && $preview_pane)
+	{
+	$win->signal_connect('key-press-event' => sub
+		{
+		my ($w, $event) = @_ ;
+		my $ctrl   = $event->get_state() & 'control-mask' ;
+		my $keyval = $event->keyval() ;
+
+		if ($ctrl && ($keyval == Gtk3::Gdk::KEY_p || $keyval == Gtk3::Gdk::KEY_P))
+			{
+			if ($preview_pane->get_visible())
+				{
+				$preview_pane->hide() ;
+				}
+			else
+				{
+				$preview_pane->show_all() ;
+				}
+			return 1 ;
+			}
+
+		return 0 ;
+		}) ;
+	}
+
+$win->show_all() ;
+Gtk3->main() ;
+
+exit $exit_code ;
+
+# ------------------------------------------------------------------------------
+
+sub usage
+{
+return <<'END' ;
+Usage: fzfw [options] [items...]
+
+Items are read from stdin if available, otherwise from arguments.
+
+Output (one item per line, or NUL-separated with --null):
+  With --print-query: first line is  query<TAB><text>
+
+Options:
+  -q, --query STR           Initial search query
+  -m, --multi               Enable multi-select
+  -H, --no-highlight        Disable match highlighting
+  -a, --ansi                Render ANSI colors in items
+  -f, --font-family NAME    Font family (default: Monospace)
+  -s, --font-size N         Font size in points (default: 15)
+  -t, --tab-width N         Tab stop width (default: 8)
+  -W, --width N|half_screen|full_screen
+  -h, --height N|full_screen
+  -n, --min-height N        Minimum window height in pixels
+  -x, --max-height N|screen Maximum window height
+  -b, --border-width N      Border width (default: 2)
+  -p, --poll-ms N           Background poll interval ms
+  -d, --delay-ms N          fzf startup delay ms
+  -P, --port N              fzf listen port (default: OS-assigned)
+  -T, --theme NAME          normal, dark, solarized-dark, solarized-light
+  -Q, --print-query         Print query as first output line
+  -I, --output-index        Print item index instead of text
+  -0, --null                NUL-delimited input and output
+                            Use with null-producing sources for filenames with
+                            spaces:  find . -print0 | fzfw -0
+      --no-buttons          Hide OK/Close buttons
+      --no-status           Hide match counter
+  -r, --header TEXT         Static header label
+      --info-height N       Info area height in pixels (default: 60)
+      --search-mode MODE    fuzzy (default), exact, prefix
+      --wrap-cursor         Wrap cursor at list edges
+  -L, --layout SLOTS        Comma-separated slot order, e.g. list,query
+  -M, --modal               Run as a modal dialog instead of a top-level window
+      --preview SPEC        Preview command with placeholders (see below)
+      --preview-cache       Cache previewer output in $tmpdir/{index}
+      --preview-width F     Fraction of window width for preview pane (default: 0.4)
+  -c, --color KEY=VALUE     Set a color (repeatable)
+      --help                Show this help
+
+Preview placeholders (used in --preview SPEC):
+  {}               Item text (shell-quoted)
+  {index}          Original item index
+  {selected}       1 if item is currently selected, 0 otherwise
+  {query}          Current query string (shell-quoted)
+  {selected_list}  Path to file containing selected items (index TAB text, one per line)
+                   File is only written when this placeholder is present
+  {port}           fzf HTTP listen port
+  {tmpdir}         Per-session temp directory (/tmp/fzfw-PID)
+  {width}          Preview pane pixel width
+  {height}         Preview pane pixel height
+  {bg}             Preview background color
+  {fg}             Preview foreground color
+
+Preview output protocol (first line(s) of stdout):
+  TEXT:            Remaining stdout is displayed as plain text
+  IMAGE:/path      Display the image file at /path
+  FILE:/path       Load /path; auto-detect text or image by extension
+  CACHE:           Cache this call's output (regardless of --preview-cache)
+  NOCACHE:         Do not cache this call (regardless of --preview-cache)
+  CACHE:/NOCACHE: may appear before or after the content-type line.
+  Unrecognised first line: entire stdout treated as plain text.
+
+  On non-zero exit: stderr is shown in the preview pane as an error.
+
+Color keys:
+  widget_fg, widget_bg, entry_fg, entry_bg,
+  match_fg, match_bg, cursor_fg, cursor_bg,
+  checkbox_fg, checkbox_bg, checkbox_selected_fg, checkbox_selected_bg,
+  border_color, header_fg, header_bg, info_fg, info_bg
+
+Key bindings (all configurable):
+  Down/Up          Navigate
+  Page Down/Up     Navigate one page
+  Ctrl+Home/End    Jump to first/last
+  Tab              Toggle+down (multi only)
+  Return           Confirm
+  Ctrl+O           Confirm
+  Ctrl+Q           Focus search entry
+  Ctrl+U           Clear query
+  Ctrl+A           Select all (multi only)
+  Ctrl+D           Deselect all (multi only)
+  Ctrl+M           Toggle multi-select mode
+  Ctrl+T           Cycle theme
+  Ctrl+P           Show/hide preview pane (when --preview is active)
+  Escape           Cancel
+
+Exit codes:
+  0   Selection confirmed
+  1   Cancelled, error, or no input
+END
+}

@@ -1,0 +1,1103 @@
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+Gtk3::FzfWidget - GTK3 fuzzy-search widget powered by fzf
+
+=head1 VERSION
+
+0.01
+
+=head1 SYNOPSIS
+
+    use Gtk3 -init ;
+    use Gtk3::FzfWidget ;
+
+    Gtk3->init() ;
+
+    my $win = Gtk3::Window->new('toplevel') ;
+    $win->signal_connect(destroy => sub { Gtk3->main_quit() }) ;
+
+    my $widget = Gtk3::FzfWidget->new(
+        items  => [qw(apple banana cherry)],
+        config =>
+            {
+            theme      => 'dark',
+            on_confirm => sub
+                {
+                my ($w, $sel, $query) = @_ ;
+                print "$_->[0]\n" for @$sel ;
+                Gtk3->main_quit() ;
+                },
+            on_cancel  => sub { Gtk3->main_quit() },
+            },
+        ) ;
+
+    $win->add($widget) ;
+    $win->show_all() ;
+    Gtk3->main() ;
+
+=head1 DESCRIPTION
+
+C<Gtk3::FzfWidget> is a GTK3 L<Gtk3::Box> subclass that embeds
+L<fzf|https://github.com/junegunn/fzf> as a headless process and communicates
+with it over its HTTP listen API.  fzf handles fuzzy matching; the widget
+handles display, theming, keybindings, ANSI color rendering, image thumbnails,
+and result callbacks.
+
+The widget can be embedded in any GTK3 container.  It manages the fzf process
+lifecycle, including automatic restart on crash (up to three times), and exposes
+a clean callback-based API for integration into applications.
+
+=head2 Requirements
+
+=over 4
+
+=item *
+
+fzf 0.65.0 or later must be on C<PATH>.
+
+=item *
+
+Perl 5.20 or later.
+
+=item *
+
+GTK3 and Glib Perl bindings (C<Gtk3>, C<Glib>).
+
+=item *
+
+C<IO::Pty>, C<IO::Socket::INET>, C<JSON::PP>, C<POSIX>, C<Fcntl>.
+
+=back
+
+=head1 CONSTRUCTOR
+
+=head2 new
+
+    my $widget = Gtk3::FzfWidget->new(
+        items  => \@items,
+        config => \%config,
+        layout => \@slots,
+        ) ;
+
+Creates and returns a new C<Gtk3::FzfWidget> instance.  The widget is a
+C<Gtk3::Box> subclass and must be added to a window or container before
+C<Gtk3->main()> is called.
+
+=head3 Constructor arguments
+
+=over 4
+
+=item items
+
+An arrayref of strings, or a coderef that returns an arrayref of strings.
+When a coderef is given it is called once at startup; this allows deferred or
+lazy loading of large datasets.
+
+    items => [qw(alpha beta gamma)]
+
+    items => sub { [map { "item $_" } 1 .. 100_000] }
+
+=item config
+
+A hashref of configuration keys.  All keys are optional.  See
+L</CONFIGURATION> for the full list.
+
+=item layout
+
+An arrayref of slot names that controls the vertical order of UI elements
+inside the widget.  Valid slot names are C<header>, C<query>, and C<list>.
+The default is C<['query', 'list']> when no header is configured, or
+C<['header', 'query', 'list']> when a header is set.
+
+    layout => [qw(header list query)]
+
+=back
+
+=head1 CONFIGURATION
+
+All configuration keys are passed in the C<config> hashref to L</new>.
+Every key is optional; the documented default is used when a key is absent or
+C<undef>.
+
+=head2 Search and behaviour
+
+=over 4
+
+=item fzf_opts
+
+Arrayref of extra options passed verbatim to fzf on the command line.
+Options that conflict with headless mode (C<--height>, C<--tmux>, C<--tty>,
+C<--no-tty>) are rejected with a warning.
+
+    fzf_opts => ['--no-sort', '--tiebreak=index']
+
+Default: C<[]>
+
+=item search_mode
+
+Controls the fzf matching algorithm.
+
+=over 4
+
+=item C<'fuzzy'>
+
+Standard fzf fuzzy matching.  This is the default.
+
+=item C<'exact'>
+
+Passes C<--exact> to fzf; substrings must match literally.
+
+=item C<'prefix'>
+
+Passes C<--prefix> to fzf; the query must match at the start of each item.
+
+=back
+
+Default: C<'fuzzy'>
+
+=item ansi
+
+When set to a true value, items may contain ANSI SGR escape sequences (colors,
+bold).  The widget renders them as Pango markup.  fzf is started with
+C<--ansi>.
+
+Default: C<0>
+
+=item highlight
+
+When true, the characters in each row that match the current query are
+highlighted in the match color.  Set to false to disable all match
+highlighting.
+
+Default: C<1>
+
+=item multi
+
+When true, the widget operates in multi-select mode.  A checkbox column
+appears on the left.  The user can toggle rows with Tab or by clicking.
+C<on_confirm> receives all selected rows; if none are explicitly selected the
+cursor row is returned.
+
+Default: C<0>
+
+=item wrap_cursor
+
+When true, pressing Down on the last row wraps to the first row, and Up on
+the first row wraps to the last.
+
+Default: C<0>
+
+=item page_step
+
+Number of rows moved by Page Down and Page Up.  When C<undef>, the step is
+computed at navigation time as the number of currently visible rows minus one,
+so Page Down scrolls exactly one screen and the last visible row becomes the
+first.  Set to a fixed integer to override.
+
+Default: C<undef>
+
+=item initial_query
+
+String to pre-fill in the search entry when the widget starts.
+
+Default: C<''>
+
+=item initial_selection
+
+Arrayref of original item indices (zero-based) to pre-select when the widget
+starts.  Only meaningful in multi-select mode.
+
+    initial_selection => [0, 2, 5]
+
+Default: C<[]>
+
+=item poll_ms
+
+Interval in milliseconds between background polls to fzf for match updates.
+Lower values make the display more responsive but increase CPU usage.
+
+Default: C<1000>
+
+=item start_delay_ms
+
+Delay in milliseconds between spawning the fzf process and first connecting to
+its HTTP port.  Increase this on slow machines if the widget shows connection
+errors on startup.
+
+Default: C<100>
+
+=item port
+
+If set, fzf is told to listen on this specific TCP port.  If not set, the
+widget picks a free port automatically.
+
+Default: C<undef> (auto-assign)
+
+=item debounce_table
+
+Controls how long the widget waits after the last keystroke before sending the
+query to fzf.  This prevents excessive HTTP traffic when the item list is
+large.
+
+The value is an arrayref of C<[$threshold, $ms]> pairs.  Each pair means:
+when the total item count is at most C<$threshold> (or C<undef> for any
+remaining count), use C<$ms> milliseconds of debounce delay.  The table is
+evaluated top to bottom; the first matching pair wins.
+
+    debounce_table =>
+        [
+        [   1_000,  50],
+        [  50_000, 200],
+        [ 500_000, 400],
+        [   undef, 600],
+        ]
+
+Default:
+
+    [
+    [    500,  30],
+    [   2000, 100],
+    [  10000, 200],
+    [ 100000, 350],
+    [  undef, 500],
+    ]
+
+=item lazy_fetch_initial
+
+Number of rows fetched from fzf immediately after a query change.  Only
+this many rows are transferred over HTTP before the widget becomes
+responsive.  Further rows are fetched on demand as the user scrolls down.
+
+For large result sets this eliminates the delay that would otherwise occur
+while downloading tens of thousands of matches before anything is displayed.
+The first C<lazy_fetch_initial> rows appear immediately; the rest load
+transparently in the background as needed.
+
+Default: C<300>
+
+=item lazy_fetch_page
+
+Number of additional rows fetched from fzf each time the user scrolls
+close to the end of the already-loaded window.  Larger values reduce the
+number of HTTP round-trips at the cost of fetching rows the user may never
+reach.
+
+Default: C<100>
+
+=item lazy_fetch_threshold
+
+How many rows before the bottom of the loaded window triggers the next
+page fetch.  When C<local_pos> is within this many rows of the last loaded
+row, a new page of C<lazy_fetch_page> rows is fetched from fzf and
+appended to the list.
+
+Higher values prefetch earlier, giving smoother scrolling at the cost of
+fetching rows the user may not need.  Set to C<0> to fetch only when the
+cursor reaches the very last loaded row.
+
+Default: C<50>
+
+=back
+
+=head2 Appearance
+
+=over 4
+
+=item theme
+
+Name of a built-in color theme.  Valid values are C<'normal'>,
+C<'dark'>, C<'solarized-dark'>, C<'solarized-light'>.  Individual color
+keys in the C<colors> hashref override the theme.
+
+Default: C<'normal'>
+
+=item colors
+
+Hashref of color overrides applied on top of the active theme.  Every key
+is optional.  Colors must be valid CSS color strings (e.g. C<'#rrggbb'>).
+
+=over 4
+
+=item widget_fg, widget_bg
+
+Foreground and background of the list area.
+
+=item entry_fg, entry_bg
+
+Foreground and background of the search entry.
+
+=item match_fg, match_bg
+
+Foreground and background used to highlight matched characters.
+
+=item cursor_fg, cursor_bg
+
+Foreground and background of the cursor row.
+
+=item checkbox_fg, checkbox_bg
+
+Foreground and background of the checkbox column (multi mode only).
+
+=item checkbox_selected_fg, checkbox_selected_bg
+
+Foreground and background of a checked checkbox (multi mode only).
+
+=item border_color
+
+Background color of the enclosing window, visible as a border when
+C<border_width> is non-zero.
+
+=item header_fg, header_bg
+
+Foreground and background of the header label.
+
+=item info_fg, info_bg
+
+Foreground and background of the hover info area.
+
+=back
+
+=item font_family
+
+Font family used for the list rows and the search entry.
+
+Default: C<'Monospace'>
+
+=item font_size
+
+Font size in points used for the list rows and the search entry.
+
+Default: C<15>
+
+=item tab_width
+
+Number of spaces a tab character expands to in the list display.  Tab
+positions are used to correctly remap fuzzy match highlight positions after
+expansion.
+
+Default: C<8>
+
+=item header
+
+String displayed in a label above (or wherever the layout places it).  When
+set, the default layout includes a C<header> slot.  The string may contain
+UTF-8 text.
+
+Default: C<undef> (no header)
+
+=item header_font_family
+
+Font family for the header label.  Falls back to C<font_family> when not set.
+
+Default: C<undef>
+
+=item header_font_size
+
+Font size in points for the header label.
+
+Default: C<undef>
+
+=item width, height
+
+Requested width and height of the enclosing window in pixels.  Special string
+values:
+
+=over 4
+
+=item C<'half_screen'>
+
+Half the screen width.  This is the default for C<width>.
+
+=item C<'full_screen'>
+
+The full screen dimension in that axis.  This is the default for C<height>.
+
+=back
+
+An integer value is used directly, clamped to the screen size.
+
+=item min_height
+
+Minimum window height in pixels.  Prevents the window from being sized smaller
+than this value by the L</height> calculation.
+
+Default: C<undef>
+
+=item max_height
+
+Maximum window height in pixels.  The string C<'screen'> means the full screen
+height.
+
+Default: C<'screen'>
+
+=item border_width
+
+Padding in pixels between the edge of the enclosing window and the widget
+content.  Together with C<border_color> this creates a visible border.
+
+Default: C<2>
+
+=item show_buttons
+
+When true, OK and Close buttons appear at the bottom of the widget.
+
+Default: C<1>
+
+=item show_status
+
+When true, the match count label appears at the bottom of the widget.
+
+Default: C<1>
+
+=item status_format
+
+Controls the text of the match count label.  Two forms are accepted:
+
+=over 4
+
+=item sprintf string
+
+A format string passed to C<sprintf($format, $match_count, $total_count,
+$selected_count)>.
+
+    status_format => '%d of %d (%d selected)'
+
+=item coderef
+
+A subroutine called as C<$code->($match_count, $total_count,
+$selected_count)>.  Must return the string to display.
+
+    status_format => sub
+        {
+        my ($mc, $tc, $sc) = @_ ;
+        return "$mc/$tc" . ($sc ? "  [$sc]" : '') ;
+        }
+
+=back
+
+Default: C<undef> (built-in C<"N/M"> format, with selection count appended in
+multi mode)
+
+=item row_striping
+
+Arrayref of CSS color strings to alternate across rows.  Each row's background
+color is C<$colors[$row_index % scalar @colors]>.  The cursor row always uses
+the cursor color regardless of striping.
+
+    row_striping => ['#1a1a2e', '#16213e']
+
+Default: C<undef> (no striping)
+
+=item info_height
+
+Height in pixels of the hover info area.  Only relevant when C<on_hover> is
+set.
+
+Default: C<60>
+
+=item image_max_width, image_max_height
+
+Maximum width and height in pixels for thumbnails in the image column.
+Only relevant when C<image_fn> is set.
+
+Default: C<64> for both
+
+=back
+
+=head2 Callbacks
+
+All callbacks are optional.  When not set, the corresponding event is silently
+ignored.
+
+=over 4
+
+=item on_confirm
+
+Called when the user confirms a selection (OK button, Return, or the
+C<confirm> keybinding).
+
+    on_confirm => sub
+        {
+        my ($widget, $selections, $query) = @_ ;
+        for my $sel (@$selections)
+            {
+            my ($text, $original_index) = @$sel ;
+            print "selected: $text (index $original_index)\n" ;
+            }
+        }
+
+Arguments:
+
+=over 4
+
+=item C<$widget>
+
+The C<Gtk3::FzfWidget> instance.
+
+=item C<$selections>
+
+Arrayref of C<[$text, $original_index]> pairs.  In single-select mode this
+always has exactly one element (the cursor row).  In multi-select mode it
+contains all toggled rows, or the cursor row if nothing was explicitly
+toggled.
+
+=item C<$query>
+
+The current text in the search entry at the time of confirmation.
+
+=back
+
+=item on_cancel
+
+Called when the user cancels (Close button, Escape, or the C<cancel>
+keybinding).  The enclosing window is destroyed after the callback returns.
+
+    on_cancel => sub
+        {
+        my ($widget) = @_ ;
+        }
+
+=item on_error
+
+Called when the fzf process fails to start or crashes more times than the
+restart limit allows.
+
+    on_error => sub
+        {
+        my ($widget, $error_message) = @_ ;
+        warn "fzf error: $error_message\n" ;
+        }
+
+=item on_query_change
+
+Called each time the search entry text changes, after the debounce delay
+and after the new query has been sent to fzf.
+
+    on_query_change => sub
+        {
+        my ($widget, $query) = @_ ;
+        }
+
+=item on_selection_change
+
+Called in multi-select mode each time a row is toggled.
+
+    on_selection_change => sub
+        {
+        my ($widget, $selections, $changed_index, $selected_state, $changed_text) = @_ ;
+        }
+
+Arguments:
+
+=over 4
+
+=item C<$widget>
+
+The C<Gtk3::FzfWidget> instance.
+
+=item C<$selections>
+
+Arrayref of C<[$text, $original_index]> pairs for all currently selected rows.
+
+=item C<$changed_index>
+
+The original item index of the row that was just toggled.
+
+=item C<$selected_state>
+
+C<1> if the row was just selected, C<0> if it was just deselected.
+
+=item C<$changed_text>
+
+The original text of the row that was just toggled.
+
+=back
+
+=item on_hover
+
+Called when the mouse pointer moves over a row in the list.  The return value
+is displayed in the info area below the list.  Setting this callback also
+makes the info area visible.
+
+    on_hover => sub
+        {
+        my ($widget, $text, $original_index) = @_ ;
+        return "details for: $text" ;
+        }
+
+=item on_ready
+
+Called once after fzf has started, loaded all items, and the widget is ready
+for interaction.
+
+    on_ready => sub
+        {
+        my ($widget) = @_ ;
+        }
+
+=back
+
+=head2 Keybindings
+
+The C<keybindings> key accepts a hashref that overrides individual keybindings.
+Each value is a keybinding string of the form C<'modifier+key'> or just
+C<'key'>.  Supported modifiers: C<ctrl>, C<shift>.  Supported named keys:
+C<return>, C<kp_enter>, C<escape>, C<tab>, C<home>, C<end>, C<page_up>,
+C<page_down>, C<up>, C<down>.  Single ASCII characters are also accepted.
+
+    keybindings =>
+        {
+        confirm      => 'ctrl+o',
+        confirm2     => 'return',
+        cancel       => 'escape',
+        focus_entry  => 'ctrl+q',
+        clear_query  => 'ctrl+u',
+        select_all   => 'ctrl+a',
+        deselect_all => 'ctrl+d',
+        toggle       => 'tab',
+        }
+
+These are also the defaults.
+
+=over 4
+
+=item confirm
+
+Primary confirm keybinding.  Fires C<on_confirm>.
+
+=item confirm2
+
+Secondary confirm keybinding.
+
+=item cancel
+
+Fires C<on_cancel> and destroys the window.
+
+=item focus_entry
+
+Moves keyboard focus to the search entry.
+
+=item clear_query
+
+Clears the search entry.
+
+=item select_all
+
+Selects all currently visible matches.  Multi mode only.
+
+=item deselect_all
+
+Deselects all currently visible matches.  Multi mode only.
+
+=item toggle
+
+Toggles the selection state of the cursor row and advances to the next row.
+Multi mode only.
+
+=back
+
+Navigation keys are fixed and cannot be rebound: Up/Down move one row,
+Page Up/Page Down move ten rows, Ctrl+Home goes to the first row,
+Ctrl+End goes to the last row.
+
+=head2 Advanced callbacks
+
+=over 4
+
+=item transform_fn
+
+A coderef called for every item before it is displayed.  The return value
+replaces the display text; the original text is still returned by
+C<on_confirm>.  Highlight positions are computed on the transformed text.
+
+    transform_fn => sub
+        {
+        my ($text) = @_ ;
+        $text =~ s/^prefix://r ;
+        }
+
+=item image_fn
+
+A coderef called for every item in the current match list.  If the item has
+an associated thumbnail it should return a C<Gtk3::Gdk::Pixbuf>; otherwise
+return C<undef>.  The image column is shown only when at least one item
+returns a pixbuf.
+
+    image_fn => sub
+        {
+        my ($text, $original_index) = @_ ;
+        return Gtk3::Gdk::Pixbuf->new_from_file_at_scale($text, 64, 64, 1)
+            if -f $text ;
+        return undef ;
+        }
+
+=item position_fn
+
+A coderef that overrides the built-in fuzzy character-position highlighter.
+It receives the display text (after C<transform_fn>) and the current query,
+and must return an arrayref of zero-based character indices to highlight.
+
+    position_fn => sub
+        {
+        my ($text, $query) = @_ ;
+        my @pos ;
+        my $i = index($text, $query) ;
+        return [] if $i < 0 ;
+        push @pos, $i + $_ for 0 .. length($query) - 1 ;
+        return \@pos ;
+        }
+
+=back
+
+=head1 PUBLIC METHODS
+
+=head2 set_items
+
+    $widget->set_items(\@items) ;
+    $widget->set_items(\@items, $query) ;
+
+Replaces the current item list.  fzf is restarted with the new items.  If
+C<$query> is provided it is pre-filled in the search entry; otherwise the
+current entry text is preserved.
+
+=head2 reload_items
+
+    $widget->reload_items() ;
+    $widget->reload_items(\@items) ;
+
+Reloads the current item list, optionally replacing it.  Equivalent to
+calling C<set_items> with the current entry text preserved.
+
+=head2 set_query
+
+    $widget->set_query($text) ;
+
+Programmatically sets the text in the search entry.  Triggers a query change
+as if the user had typed the text.
+
+=head2 freeze
+
+    $widget->freeze() ;
+
+Suspends background polling and query processing.  Use before bulk item
+replacement to prevent partial display updates.  Resume with L</unfreeze>.
+
+=head2 unfreeze
+
+    $widget->unfreeze() ;
+
+Resumes background polling and query processing after a L</freeze>.
+
+=head2 set_poll_interval
+
+    $widget->set_poll_interval($ms) ;
+
+Changes the background poll interval to C<$ms> milliseconds at runtime.
+
+=head2 get_match_count
+
+    my $n = $widget->get_match_count() ;
+
+Returns the number of items currently matching the query.
+
+=head2 get_total_count
+
+    my $n = $widget->get_total_count() ;
+
+Returns the total number of items loaded into fzf.
+
+=head2 get_query
+
+    my $text = $widget->get_query() ;
+
+Returns the current text in the search entry.
+
+=head2 get_selection
+
+    my $sel = $widget->get_selection() ;
+
+Returns an arrayref of C<[$text, $original_index]> pairs for the current
+selection.  In single-select mode this is always the cursor row.  In
+multi-select mode it is all toggled rows, or the cursor row when none are
+toggled.
+
+Returns C<[]> when no matches are visible.
+
+=head2 get_filtered_list
+
+    my $list = $widget->get_filtered_list() ;
+
+Returns an arrayref of C<[$text, $original_index]> pairs for all rows
+currently visible in the list (i.e. matching the current query).
+
+=head2 set_placeholder_text
+
+    $widget->set_placeholder_text($text) ;
+
+Sets the placeholder text shown in the search entry when it is empty.
+
+=head2 Widget accessors
+
+The following methods return the underlying GTK3 widget for the named area.
+They are useful for applying extra styling or connecting additional signals.
+
+    $widget->query_widget()   # Gtk3::Entry
+    $widget->list_widget()    # Gtk3::ScrolledWindow
+    $widget->status_widget()  # Gtk3::Label
+    $widget->header_widget()  # Gtk3::Label (undef if no header)
+    $widget->info_widget()    # Gtk3::Label (undef if on_hover not set)
+
+=head1 ARCHITECTURE
+
+This section describes the internal design for maintainers.
+
+=head2 fzf communication
+
+fzf is started with C<--listen=PORT> where the port is chosen by binding a
+temporary socket to port 0 and reading the OS-assigned port number.
+
+fzf requires a controlling terminal to start.  L<IO::Pty> creates a
+pseudoterminal; the slave end is set as fzf's controlling terminal to satisfy
+C<isatty()>.  Items are written to fzf's stdin pipe; fzf closes stdin when
+loading is complete.
+
+The widget then communicates with fzf over HTTP:
+
+=over 4
+
+=item GET C</?limit=400&offset=N>
+
+Fetches paged match state.  The response body is a JSON object containing
+C<matchCount>, C<totalCount>, C<position>, C<selected>, and C<matches>.
+GET requests must not include a C<Content-Length> header; fzf returns 400 if
+one is present.  Pages of 400 are fetched in a loop until all matches are
+retrieved.
+
+=item POST C</>
+
+Sends an action string to fzf.  Supported actions include
+C<change-query(text)>, C<down>, C<up>, C<toggle>, C<select-all>,
+C<deselect-all>.
+
+=back
+
+=head2 Process lifecycle
+
+The fzf process is monitored with a Glib timer that calls
+C<waitpid(WNOHANG)> every 500ms.  GTK's main loop does not reliably deliver
+SIGCHLD to Perl signal handlers (the signal may arrive while GTK is in C
+code).  The timer is the standard workaround.
+
+On unexpected exit the process is restarted up to three times with a 500ms
+delay between attempts.  After three failed restarts C<on_error> is called.
+
+=head2 Local state cache
+
+The widget maintains a local cache of the most recent GET response to allow
+cursor navigation and selection toggling without a round-trip on every
+keystroke:
+
+=over 4
+
+=item cached_matches
+
+Arrayref of match hashrefs from the last GET response.  Each hashref has
+C<text> and C<index> keys.
+
+=item local_pos
+
+Integer cursor row index into C<cached_matches>.
+
+=item local_selected
+
+Hashref of C<original_index => 1> for all toggled rows.
+
+=back
+
+Navigation (Up, Down, Page Up, Page Down) and Tab operate on the local cache
+only and do not trigger a GET.  A query change sends a POST then immediately
+does a GET and rebuilds the store.
+
+=head2 ListStore schema
+
+The internal L<Gtk3::ListStore> has five columns:
+
+  Col 0  Glib::String         Pango markup for display
+  Col 1  Glib::Int            Original item index
+  Col 2  Glib::Boolean        Selected flag (multi mode)
+  Col 3  Glib::String         Original text (returned on confirm)
+  Col 4  Gtk3::Gdk::Pixbuf    Thumbnail pixbuf (may be undef)
+
+=head2 Markup pipeline
+
+For each row the display string is produced as follows:
+
+=over 4
+
+=item 1.
+
+C<transform_fn($original_text)> is called by the caller if set; the result
+becomes the display text.
+
+=item 2.
+
+C<_get_positions($display, $query)> returns an arrayref of zero-based
+character indices in the display text that match query characters.
+
+=item 3.
+
+C<_make_markup($display, \@positions, $is_cursor, $stripe_bg)> builds a Pango
+markup string:
+
+=over 4
+
+=item *
+
+Tab characters are expanded to spaces according to C<tab_width>.  A position
+map is built before expansion and used to remap highlight indices to their
+expanded equivalents.
+
+=item *
+
+C<&>, C<< < >>, and C<< > >> are XML-escaped.
+
+=item *
+
+Matched characters are wrapped in C<< <span foreground="match_fg"> >>.
+
+=item *
+
+The cursor row is wrapped in
+C<< <span background="cursor_bg" foreground="cursor_fg"> >>.
+
+=item *
+
+Striped rows are wrapped in C<< <span background="stripe_color"> >>.
+
+=back
+
+=back
+
+When C<ansi> mode is active, ANSI SGR escape sequences in the item text are
+parsed and converted directly to Pango markup.  fzf strips ANSI codes from
+its JSON responses, so the original item text (stored in C<_items_by_index>)
+is used as the ANSI source.
+
+=head2 CSS scoping
+
+Every widget instance gets a unique integer ID (C<instance_id>).  All CSS
+rules are scoped using per-instance widget names (e.g. C<#fzf-list-1>,
+C<#fzf-wb-1>) to prevent color bleed between multiple C<Gtk3::FzfWidget>
+instances in the same process.
+
+=head2 Themes
+
+Four built-in themes are provided: C<normal>, C<dark>, C<solarized-dark>,
+C<solarized-light>.  Each defines every color key.  The user C<colors> hashref
+is merged on top per key; the user value wins whenever it is defined.
+
+=head1 SUB-MODULES
+
+=head2 Gtk3::FzfWidget::Process
+
+Manages the fzf child process.  Handles spawning, the pseudoterminal, stdin
+pipe, death watch timer, restart logic, and delegates HTTP communication to
+L<Gtk3::FzfWidget::Client>.
+
+This module is an internal implementation detail and is not part of the public
+API.
+
+=head2 Gtk3::FzfWidget::Client
+
+HTTP client for the fzf listen port.  Maintains a persistent TCP connection
+and implements C<get_state>, C<get_more_matches>, and C<post_action>.
+
+GET requests deliberately omit C<Content-Length> because fzf rejects GET
+requests that carry it.  POST requests include C<Content-Length>.
+
+This module is an internal implementation detail and is not part of the public
+API.
+
+=head2 Gtk3::FzfWidget::Layout
+
+Slot-based widget packing helper.  Takes an ordered list of slot names and
+packs the corresponding widgets into a C<Gtk3::Box>.  The C<list> slot is
+packed with expand and fill; all other slots are packed without.
+
+This module is an internal implementation detail and is not part of the public
+API.
+
+=head2 Gtk3::FzfWidget::Messages
+
+Centralised string table for all user-visible messages.  Exported constants
+(C<MSG_*>) index into a C<sprintf>-formatted message array.  The C<msg>
+function formats a message by index.
+
+This module is an internal implementation detail and is not part of the public
+API.
+
+=head1 EXAMPLES
+
+The C<examples/FzfWidget/> directory contains thirty-four fully annotated
+example scripts.  C<00_all_options_template.pl> lists every configuration
+option with comments and is the recommended starting point.
+
+Notable examples:
+
+=over 4
+
+=item 07_coderef_items.pl
+
+Items from a coderef for lazy or deferred loading.
+
+=item 11_hover_info_area.pl
+
+File metadata displayed in the info area on mouse hover.
+
+=item 13_images_thumbnails.pl
+
+Pixbuf thumbnails in the image column with a file-browser layout.
+
+=item 14_transform_fn.pl
+
+Display text rewritten by C<transform_fn> without affecting the confirmed
+value.
+
+=item 22_embedded_in_layout.pl
+
+Widget packed as a sidebar inside a larger application layout.
+
+=item 25_debounce_table.pl
+
+Custom debounce table tuned for large item sets.
+
+=item 34_lazy_fetch.pl
+
+Windowed lazy fetching with 500k items: only the first 300 rows are fetched
+on query change; further pages load transparently as the user scrolls.
+
+=back
+
+=head1 DEPENDENCIES
+
+L<Gtk3>, L<Glib>, L<IO::Pty>, L<IO::Socket::INET>, L<JSON::PP>, L<POSIX>,
+L<Fcntl>
+
+=head1 SEE ALSO
+
+L<Gtk3::PreviewPane>, L<Gtk3::FzfPreview>,
+L<fzf|https://github.com/junegunn/fzf>
+
+=head1 AUTHOR
+
+nkh
+
+=head1 LICENSE
+
+Artistic License 2.0
+
+=cut

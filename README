@@ -1,0 +1,57 @@
+Gtk3::FzfWidget
+===============
+
+A GTK3 widget that embeds fzf as a headless fuzzy-search engine.
+
+DESCRIPTION
+
+Gtk3::FzfWidget runs fzf as a background process communicating via its
+HTTP API (fzf --listen). The widget provides a search entry, a filtered
+list, a match counter, and OK/Close buttons.
+
+Also included: fzfw, a command-line launcher for the widget.
+
+PREREQUISITES
+
+  fzf >= 0.65.0 (with --listen support)
+  Perl >= 5.20
+  Gtk3, Glib, IO::Pty, IO::Socket::INET, JSON::PP
+
+INSTALLATION
+
+  perl Build.PL
+  ./Build
+  ./Build test
+  ./Build install
+
+USAGE
+
+  use Gtk3::FzfWidget ;
+
+  my $widget = Gtk3::FzfWidget->new(
+      items  => \@items,
+      config => { theme => 'dark', multi => 1 },
+      ) ;
+
+  # Command line
+  ls /usr/bin | fzfw --theme dark --multi
+
+KEY BINDINGS
+
+  Down/Up     Navigate list
+  Tab         Toggle selection (multi only)
+  Ctrl+O      Confirm
+  Ctrl+Q      Focus search entry
+  Escape      Cancel
+
+THEMES
+
+  normal, dark, solarized-dark, solarized-light
+
+REPOSITORY
+
+  https://github.com/nkh/P5-Fzf_Gtk3
+
+LICENSE
+
+  Artistic License 2.0
