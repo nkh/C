@@ -1878,6 +1878,124 @@ return $text ;
 
 # ------------------------------------------------------------------------------
 
+sub _apply_theme
+{
+my ($self, $theme_name) = @_ ;
+
+my $theme = $THEMES{$theme_name} or return ;
+
+$self->{_theme_name} = $theme_name ;
+
+my $uc = $self->{_user_colors} // {} ;
+$self->{colors} =
+	{
+	widget_fg            => $uc->{widget_fg}            // $theme->{widget_fg},
+	widget_bg            => $uc->{widget_bg}            // $theme->{widget_bg},
+	entry_fg             => $uc->{entry_fg}             // $theme->{entry_fg},
+	entry_bg             => $uc->{entry_bg}             // $theme->{entry_bg},
+	match_fg             => $uc->{match_fg}             // $theme->{match_fg},
+	match_bg             => $uc->{match_bg}             // $theme->{match_bg},
+	checkbox_fg          => $uc->{checkbox_fg}          // $theme->{checkbox_fg},
+	checkbox_bg          => $uc->{checkbox_bg}          // $theme->{checkbox_bg},
+	checkbox_selected_fg => $uc->{checkbox_selected_fg} // $theme->{checkbox_selected_fg},
+	checkbox_selected_bg => $uc->{checkbox_selected_bg} // $theme->{checkbox_selected_bg},
+	cursor_fg            => $uc->{cursor_fg}            // $theme->{cursor_fg},
+	cursor_bg            => $uc->{cursor_bg}            // $theme->{cursor_bg},
+	border_color         => $uc->{border_color}         // $theme->{border_color},
+	header_fg            => $uc->{header_fg}            // $theme->{header_fg},
+	header_bg            => $uc->{header_bg}            // $theme->{header_bg},
+	info_fg              => $uc->{info_fg}              // $theme->{info_fg},
+	info_bg              => $uc->{info_bg}              // $theme->{info_bg},
+	} ;
+
+my $c       = $self->{colors} ;
+my $tv_name = $self->{tree_view}->get_name() ;
+my $wb_name = $self->{widget_box}->get_name() ;
+my $bb_name = $self->{bottom_bar} ? $self->{bottom_bar}->get_name() : '' ;
+my $sl_name = $self->{status_label}->get_name() ;
+
+my @css ;
+
+	{
+	my @p ;
+	push @p, "color: $c->{entry_fg}"            if $c->{entry_fg} ;
+	push @p, "background-color: $c->{entry_bg}" if $c->{entry_bg} ;
+	push @p, "font-family: $self->{font_family}" if $self->{font_family} ;
+	push @p, "font-size: $self->{font_size}pt"   if $self->{font_size} ;
+	my $caret = $c->{entry_fg} // '#000000' ;
+	push @p, "caret-color: $caret" ;
+	push @css, "entry { " . join(' ; ', @p) . " }" ;
+	}
+
+if ($c->{widget_bg} || $c->{widget_fg})
+	{
+	my @p ;
+	push @p, "color: $c->{widget_fg}"            if $c->{widget_fg} ;
+	push @p, "background-color: $c->{widget_bg}" if $c->{widget_bg} ;
+	push @css, "#$tv_name { " . join(' ; ', @p) . " }" ;
+	}
+
+push @css, "#$tv_name cell { padding-top: $self->{row_spacing}px ; padding-bottom: $self->{row_spacing}px }" ;
+push @css, "#$wb_name { background-color: $c->{widget_bg} }"                           if $c->{widget_bg} ;
+push @css, "#$bb_name { background-color: $c->{widget_bg} ; margin: 0 ; padding: 0 }" if $bb_name && $c->{widget_bg} ;
+push @css, "#$sl_name { color: $c->{widget_fg} }"                                      if $c->{widget_fg} ;
+
+if (@css)
+	{
+	my $screen   = Gtk3::Gdk::Screen::get_default() ;
+	my $priority = Gtk3::STYLE_PROVIDER_PRIORITY_APPLICATION ;
+
+	if ($self->{_css_provider})
+		{
+		Gtk3::StyleContext::remove_provider_for_screen($screen, $self->{_css_provider}) ;
+		}
+
+	my $provider = Gtk3::CssProvider->new() ;
+	$provider->load_from_data(join("\n", @css)) ;
+	Gtk3::StyleContext::add_provider_for_screen($screen, $provider, $priority) ;
+	$self->{_css_provider} = $provider ;
+	}
+
+# Force redraw of all visible rows with new colors
+$self->_rebuild_visible_markup() ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub _on_process_error
+{
+my ($self, $error_msg) = @_ ;
+
+$self->_show_error($error_msg) ;
+$self->{on_error}->($self, $error_msg) if $self->{on_error} ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub _set_loading
+{
+my ($self, $loading) = @_ ;
+
+$self->{loading} = $loading ;
+$self->{scroll_win}->set_sensitive(!$loading) ;
+$self->{ok_button}->set_sensitive(!$loading) if $self->{show_buttons} ;
+$self->{status_label}->set_text(msg(MSG_LOADING)) if $loading && $self->{show_status} ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub _show_error
+{
+my ($self, $error_msg) = @_ ;
+
+$self->_stop_load_timer() ;
+$self->{error_label}->set_text($error_msg) ;
+$self->{widget_box}->hide() ;
+$self->{error_label}->show() ;
+}
+
+# ------------------------------------------------------------------------------
+
 sub _cleanup
 {
 my ($self) = @_ ;

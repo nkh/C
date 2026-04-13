@@ -865,23 +865,42 @@ pseudoterminal; the slave end is set as fzf's controlling terminal to satisfy
 C<isatty()>.  Items are written to fzf's stdin pipe; fzf closes stdin when
 loading is complete.
 
-The widget then communicates with fzf over HTTP:
+The widget then communicates with fzf over HTTP via B<SocketBackend>:
 
 =over 4
 
-=item GET C</?limit=400&offset=N>
+=item GET C</?limit=N>
 
-Fetches paged match state.  The response body is a JSON object containing
-C<matchCount>, C<totalCount>, C<position>, C<selected>, and C<matches>.
-GET requests must not include a C<Content-Length> header; fzf returns 400 if
-one is present.  Pages of 400 are fetched in a loop until all matches are
-retrieved.
+Fetches up to N matching items from fzf.  Used on query change and for
+preemptive prefetch.  All requests use C<offset=0>; higher offsets require fzf
+to sort the full match list which blocks its HTTP server on large datasets.
 
 =item POST C</>
 
-Sends an action string to fzf.  Supported actions include
-C<change-query(text)>, C<down>, C<up>, C<toggle>, C<select-all>,
-C<deselect-all>.
+Sends an action string to fzf.  Used only for C<change-query(text)> on query
+change.
+
+=back
+
+=head2 Backend abstraction
+
+All fzf communication goes through the B<FzfBackend> interface:
+
+=over 4
+
+=item SocketBackend
+
+Wraps L<Gtk3::FzfWidget::Process> + L<Gtk3::FzfWidget::StatePoller>.  Used in
+production.  Each HTTP request forks a child process; results come back through
+a pipe watched by a Glib IO watch.  The GTK main loop never blocks.
+
+=item MockBackend
+
+In-process case-insensitive substring filter over the item array.  No forks, no
+sockets, no timers.  Useful for debugging and testing.  Enable by passing
+C<< backend => Gtk3::FzfWidget::MockBackend->new(items => \@items) >> to
+C<new>.  Set C<FZFW_DEBUG=1> and C<FZFW_LOG=/tmp/fzfw.log> to trace all
+backend calls.
 
 =back
 
@@ -895,42 +914,69 @@ code).  The timer is the standard workaround.
 On unexpected exit the process is restarted up to three times with a 500ms
 delay between attempts.  After three failed restarts C<on_error> is called.
 
-=head2 Local state cache
+=head2 Local state
 
-The widget maintains a local cache of the most recent GET response to allow
-cursor navigation and selection toggling without a round-trip on every
-keystroke:
+The widget holds items and match state entirely in Perl memory:
 
 =over 4
 
-=item cached_matches
+=item _all_items
 
-Arrayref of match hashrefs from the last GET response.  Each hashref has
-C<text> and C<index> keys.
+Arrayref of all item strings.  Index N in this array is the original item index
+N.  Populated once at startup; never modified.
+
+=item _match_indices
+
+Ordered arrayref of original indices that match the current query (the fetched
+window).  C<local_pos> is a row index into this array.
+
+=item _visible_set
+
+Hash C<< { original_index => 1 } >> used by the C<TreeModelFilter> visible-func.
+Updated on query change and on prefetch completion.
 
 =item local_pos
 
-Integer cursor row index into C<cached_matches>.
+Integer cursor row index into C<_match_indices>.
 
 =item local_selected
 
-Hashref of C<original_index => 1> for all toggled rows.
+Hashref of C<original_index => 1> for all toggled rows.  Managed entirely in
+Perl; fzf is not consulted for multi-select state.
+
+=item _match_count
+
+Total number of matches for the current query as reported by the backend.  May
+exceed the length of C<_match_indices> while the prefetch window is being
+extended.
+
+=item prefetch_buffer
+
+Number of items to fetch ahead of the visible end of the list (default 100).
+When C<local_pos E<gt>= _prefetch_at>, C<fetch_async> is called to extend the
+window before the display end is reached.
 
 =back
 
-Navigation (Up, Down, Page Up, Page Down) and Tab operate on the local cache
-only and do not trigger a GET.  A query change sends a POST then immediately
-does a GET and rebuilds the store.
+Navigation (Up, Down, Page Up, Page Down, Tab) operates on C<_match_indices>
+only — no fzf communication, no timers.  A query change calls
+C<backend-E<gt>query_async> and updates C<_visible_set> then calls
+C<_filter_model-E<gt>refilter()>.
 
 =head2 ListStore schema
 
-The internal L<Gtk3::ListStore> has five columns:
+The internal L<Gtk3::ListStore> has three columns.  Row N corresponds to
+C<_all_items[N]> (original index = store row number).  All rows are loaded
+once at startup and never deleted.
 
   Col 0  Glib::String         Pango markup for display
-  Col 1  Glib::Int            Original item index
-  Col 2  Glib::Boolean        Selected flag (multi mode)
-  Col 3  Glib::String         Original text (returned on confirm)
-  Col 4  Gtk3::Gdk::Pixbuf    Thumbnail pixbuf (may be undef)
+  Col 1  Glib::Boolean        Selected flag (multi mode)
+  Col 2  Gtk3::Gdk::Pixbuf    Thumbnail pixbuf (may be undef)
+
+Visibility is controlled by a L<Gtk3::TreeModelFilter> whose C<visible-func>
+checks C<_visible_set>.  Cell background (cursor highlight and row striping) is
+computed by a C<set_cell_data_func> callback on the text column at paint time,
+so no background columns are stored in the model.
 
 =head2 Markup pipeline
 
@@ -984,8 +1030,7 @@ Striped rows are wrapped in C<< <span background="stripe_color"> >>.
 
 When C<ansi> mode is active, ANSI SGR escape sequences in the item text are
 parsed and converted directly to Pango markup.  fzf strips ANSI codes from
-its JSON responses, so the original item text (stored in C<_items_by_index>)
-is used as the ANSI source.
+its JSON responses; the original item text is read from C<_all_items> instead.
 
 =head2 CSS scoping
 
