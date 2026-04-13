@@ -1,98 +1,96 @@
-# Lazy Fetch Design
+# Lazy Fetch / Filter Design
 
 ## Architecture
 
-Items are streamed to fzf in a forked child (`ItemWriter`) so the GTK main
-loop is never blocked on startup.  fzf starts returning matches before all
-items are loaded.
+Items are loaded once into a `Gtk3::ListStore` at startup — one row per item,
+never deleted. A `Gtk3::TreeModelFilter` sits between the store and the
+`TreeView`. Visibility is controlled by `_visible_set` (a Perl hash of matching
+original indices). The `visible-func` callback does a hash lookup for each row;
+GTK calls it only during `refilter()`.
 
-State is fetched from fzf's HTTP API asynchronously via `StatePoller`.  Each
-HTTP request runs in a forked child; a Glib IO watch reads the response through
-a pipe without blocking the main loop.
+## Backend abstraction
 
-## Key state variables
+`FzfBackend` defines the interface:
 
-| Variable | Meaning |
+- `query_async($query, $limit, $cb)` — filter by query, return first $limit matching indices
+- `fetch_async($limit, $cb)` — fetch more matches for the current query
+- `total_count()` / `match_count()`
+- `stop()`
+
+Two implementations:
+
+- `SocketBackend` — wraps `Process` + `StatePoller`, talks to real fzf over HTTP
+- `MockBackend` — in-process substring filter, no forks, no sockets, for debugging
+
+Enable `MockBackend` by passing `backend => MockBackend->new(items => \@items)` to `FzfWidget::new`.
+
+## Key state
+
+| Field | Meaning |
 |---|---|
-| `lazy_fetched` | Count of rows in `cached_matches` |
-| `lazy_total_mc` | Total match count from last fzf response |
-| `cached_matches` | Match objects currently held in Perl |
-| `local_pos` | Current cursor row index into `cached_matches` |
-| `_fetch_pending` | 1 while a fetch is in flight, 0 otherwise |
+| `_all_items` | arrayref of all item strings; index = original item index |
+| `_match_indices` | ordered arrayref of matching original indices (fetched window) |
+| `_visible_set` | hash `{ index => 1 }` read by visible-func |
+| `_match_count` | total matches for current query (may exceed `_match_indices` length) |
+| `_total_count` | total items indexed by backend |
+| `_prefetch_at` | trigger prefetch when `local_pos >= _prefetch_at` |
+| `_fetch_in_flight` | 1 while `fetch_async` is pending |
+| `prefetch_buffer` | configurable (default 100); items fetched ahead of display end |
 
-**Invariant**: `lazy_fetched == scalar @cached_matches` after every `_refresh_finish`.
+`local_pos` is a row index into `_match_indices` (filter-model space).
+Store row N corresponds to `_all_items[N]` (original index = store row number).
 
-## Refresh flow
-
-```
-_refresh()
-  └─ get_state_async(limit=1)      [fork child → HTTP → pipe → IO watch]
-       └─ callback fires when response arrives
-            ├─ query_changed → get initial window, _refresh_finish
-            └─ same query   → _fetch_more_async
-                  ├─ cursor not near end → _refresh_finish
-                  └─ cursor near end    → get_more_async(offset, page)
-                        └─ callback → append rows, _refresh_finish
-
-_refresh_finish()
-  - clears _fetch_pending
-  - updates cached_matches, local_pos
-  - calls _update_list (GTK store rebuild)
-  - calls _scroll_to to restore viewport
-```
-
-## Scroll trigger
-
-`_navigate` detects when the cursor reaches `count - 1` (last loaded row) and
-`lazy_total_mc > lazy_fetched`.  It sets `_fetch_pending = 1` and schedules a
-1ms timer that calls `_refresh`.  `_fetch_pending` stays set until
-`_refresh_finish` clears it, preventing duplicate fetches from rapid keypresses.
-
-## StatePoller: skip-if-busy
-
-`StatePoller` runs one HTTP request at a time in a forked child.  If `_request`
-is called while a child is already running, the new request is silently dropped.
-The bg_poll timer (100ms) and `_fetch_pending` together ensure the next
-opportunity to fetch arrives quickly.
-
-## Sequence diagram: scroll to last row
+## Query change flow
 
 ```
-User              FzfWidget           StatePoller         fzf
-  |                   |                    |               |
-  | Down (at N-2)     |                    |               |
-  |─────────────────>│                    |               |
-  |                   | _navigate(+1)      |               |
-  |                   | new_pos=N-1=last   |               |
-  |                   | _fetch_pending=1   |               |
-  |                   | timer 1ms          |               |
-  |                   |                    |               |
-  | [1ms later]       |                    |               |
-  |                   | _refresh()         |               |
-  |                   | get_state_async(1) |               |
-  |                   |───────────────────>| fork child    |
-  |                   |                    |──────────────>|
-  | [keypresses queue while child runs — no blocking]      |
-  |                   |                    |<── response ──|
-  |                   |<── IO watch fires ─|               |
-  |                   | _fetch_more_async  |               |
-  |                   | get_more_async(N,page)             |
-  |                   |───────────────────>| fork child    |
-  |                   |                    |──────────────>|
-  |                   |                    |<── response ──|
-  |                   |<── IO watch fires ─|               |
-  |                   | _refresh_finish    |               |
-  |                   | _fetch_pending=0   |               |
-  |                   | cached_matches grows               |
-  |<── display N+page rows                |               |
+user types → debounce → _send_query()
+  → _query_backend($query)
+    → backend->query_async($query, prefetch_buffer*2, cb)
+      → cb: _apply_query_result(\@matches, $mc, $tc)
+        - _match_indices = [map {$_->{index}} @matches]
+        - _visible_set   = {map {$_ => 1} @_match_indices}
+        - local_pos = 0
+        - _filter_model->refilter()
+        - _rebuild_visible_markup()
+        - _update_status_label()
 ```
 
-## Why the old approach froze at ~950
+No timers started. Done.
 
-Every `_refresh` previously called `get_state(N)` synchronously, where N grew
-with each scroll step.  At 950 rows, `get_state(950)` fetched 950-item JSON
-(~190 KB) and decoded it with `JSON::PP` (~500ms) — blocking the main loop each
-poll cycle.  This caused keyboard events to queue, then flush all at once,
-making the freeze reproducible at exactly the same row count.
+## Scroll flow
 
-The async `StatePoller` + skip-if-busy design eliminates all blocking.
+```
+_navigate($delta)
+  - update local_pos
+  - _redraw_cursor(old, new)   — 2 store->set calls
+  - _scroll_to(new, old)
+  - if local_pos >= _prefetch_at AND _match_indices < _match_count:
+      _prefetch_more()
+  - if at last row AND fetch in flight:
+      pump Glib::MainContext->iteration(0) up to 500ms
+```
+
+`_prefetch_more()`:
+```
+  _fetch_in_flight = 1
+  backend->fetch_async(current + prefetch_buffer, cb)
+    → cb: append new indices to _match_indices and _visible_set
+          _filter_model->refilter()
+          _fetch_in_flight = 0
+```
+
+## Timers
+
+The only timer is `_load_timer`, which fires every `poll_ms` until
+`backend->total_count() == scalar(@_all_items)` (all items indexed). Once that
+condition is met the timer removes itself. With `MockBackend`, items are
+available immediately so the timer fires once and stops.
+
+No other timers run. There is no `bg_poll`, no `_reset_bg_poll`, no fetch
+timer. When the user is idle (no query change, no scrolling near the end of
+the window), nothing runs.
+
+## Logging
+
+Set `FZFW_DEBUG=1` to enable. Set `FZFW_LOG=/tmp/fzfw.log` to also write to
+a file. Prefixes: `WIDGET:`, `BACKEND:SOCKET:`, `BACKEND:MOCK:`, `POLLER:`.
