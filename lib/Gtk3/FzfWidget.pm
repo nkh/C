@@ -597,7 +597,7 @@ $self->{_filter_model}->set_visible_func(sub
 	{
 	my ($model, $iter) = @_ ;
 	my $path = $model->get_path($iter) ;
-	my $idx  = $path->get_indices()->[0] ;
+	my $idx  = ($path->get_indices())[0] ;
 	return exists $self->{_visible_set}{$idx} ? 1 : 0 ;
 	}) ;
 
@@ -661,7 +661,7 @@ $text_col->set_cell_data_func($text_cell, sub
 
 	# Map filter-model row to original store index via _match_indices
 	my $filter_path = $model->get_path($iter) ;
-	my $filter_row  = $filter_path->get_indices()->[0] ;
+	my $filter_row  = ($filter_path->get_indices())[0] ;
 	my $c2          = $self->{colors} ;
 	my $stripe      = $self->{row_striping} ;
 
