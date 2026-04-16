@@ -971,12 +971,7 @@ my $query = $self->{entry}->get_text() ;
 $self->_dbg("send_query: q='$query'") ;
 $self->{on_query_change}->($self, $query) if $self->{on_query_change} ;
 
-# Reset cursor and visible set immediately for responsiveness
-$self->{local_pos}      = 0 ;
-$self->{_match_indices} = [] ;
-$self->{_visible_set}   = {} ;
 $self->{_fetch_in_flight} = 0 ;
-
 $self->_query_backend($query) ;
 }
 
@@ -1316,19 +1311,29 @@ sub _apply_query_result
 {
 my ($self, $matches, $mc, $tc, $query) = @_ ;
 
+# Clear selection when query changes
+$self->{local_selected} = {}
+	if ($self->{last_query} // '') ne $query ;
+
 $self->{last_query}     = $query ;
 $self->{_match_count}   = $mc ;
 $self->{_total_count}   = $tc ;
 $self->{_match_indices} = [ map { $_->{index} } @$matches ] ;
 $self->{_visible_set}   = { map { $_ => 1 } @{$self->{_match_indices}} } ;
 $self->{local_pos}      = 0 ;
-$self->{local_selected} = {} if ($self->{last_query} // '') ne $query ;
 
 my $fetched = scalar @{$self->{_match_indices}} ;
 $self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
 $self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 
 $self->_dbg("apply_query_result: fetched=$fetched mc=$mc prefetch_at=$self->{_prefetch_at}") ;
+
+# Stop the load timer once fzf reports it has indexed all items.
+if ($self->{_load_timer} && $tc >= scalar @{$self->{_all_items}})
+	{
+	$self->_dbg("apply_query_result: all items indexed — stopping load timer") ;
+	$self->_stop_load_timer() ;
+	}
 
 # Refilter — GTK calls visible-func for every store row
 $self->{_filter_model}->refilter() ;
@@ -1442,24 +1447,34 @@ $self->_stop_load_timer() ;
 
 my $total_items = scalar @{$self->{_all_items}} ;
 
-$self->_dbg("start_load_timer: waiting for $total_items items to be indexed") ;
+# If the backend already reports all items indexed (e.g. MockBackend or
+# fzf responded quickly), no timer is needed.
+return if $self->{_backend} && $self->{_backend}->total_count() >= $total_items ;
+
+$self->_dbg("start_load_timer: waiting for $total_items items") ;
 
 $self->{_load_timer} = Glib::Timeout->add(
-	$self->{poll_ms},
+	$self->{poll_ms} * 2,
 	sub
 		{
 		return 0 unless $self->{_backend} ;
 		return 1 if $self->{frozen} ;
 
-		my $indexed = $self->{_backend}->total_count() ;
-		$self->_dbg("load_timer: indexed=$indexed total=$total_items") ;
-
-		if ($indexed >= $total_items)
+		# Stop once the backend confirms all items are indexed.
+		# _total_count is updated by every query/fetch response.
+		if ($self->{_total_count} >= $total_items)
 			{
-			$self->_dbg("load_timer: all items indexed — stopping timer") ;
+			$self->_dbg("load_timer: all $total_items items indexed — stopping") ;
 			$self->{_load_timer} = undef ;
 			return 0 ;
 			}
+
+		# Fire a lightweight query to update _total_count.
+		$self->{_backend}->fetch_async(1, sub
+			{
+			my ($m, $mc, $tc) = @_ ;
+			$self->{_total_count} = $tc if defined $tc ;
+			}) ;
 
 		return 1 ;
 		},

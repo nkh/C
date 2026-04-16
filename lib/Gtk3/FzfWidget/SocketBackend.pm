@@ -56,6 +56,11 @@ my ($self, $query, $limit, $cb) = @_ ;
 
 _log("query_async q='$query' limit=$limit") ;
 
+# Tell fzf to switch to the new query first, then fetch state.
+# post_action is fire-and-forget (async fork); we fetch state immediately
+# after — fzf processes the action before responding to the GET.
+$self->{process}->post_action("change-query($query)") ;
+
 $self->{process}->get_state_async($limit, sub
 	{
 	my ($state) = @_ ;
@@ -70,7 +75,7 @@ $self->{process}->get_state_async($limit, sub
 	$self->{_mc} = $state->{matchCount} // $state->{match_count} // 0 ;
 	$self->{_tc} = $state->{totalCount} // $state->{total_count} // 0 ;
 
-	my $raw  = $state->{matches} // [] ;
+	my $raw     = $state->{matches} // [] ;
 	my @matches = map { { index => ($_->{index} // 0) } } @$raw ;
 
 	_log("query_async: mc=$self->{_mc} tc=$self->{_tc} returned=" . scalar(@matches)) ;
