@@ -1,28 +1,22 @@
 #!/usr/bin/perl
 
-# Example 34 — Async item loading with lazy windowed result fetching.
+# Example 34 — Large dataset with preemptive prefetch.
 #
 # Demonstrates:
-#   - Items provided as a coderef iterator: called repeatedly, each call
-#     returns an arrayref of items, or undef when exhausted.
-#     The ItemWriter module forks a child to stream items to fzf without
-#     blocking the GTK main loop.  The widget appears and is interactive
-#     immediately — fzf starts returning matches before all items are loaded.
+#   - 500,000 items streamed to fzf via a coderef iterator (ItemWriter forks
+#     a child writer so the GTK main loop is never blocked).
 #
-#   - lazy_fetch_initial: rows fetched on first display after a query change.
-#     Default 50 — small enough for near-instant first display.
+#   - prefetch_buffer: when the cursor is within this many rows of the end of
+#     the fetched window, the next page is fetched in the background before
+#     the display end is reached.  Default 100.
 #
-#   - lazy_fetch_page: additional rows fetched each time the cursor approaches
-#     the end of what is loaded.  Default 50.
+#   - All scrolling is local — no fzf HTTP calls on Up/Down/Tab.
+#     fzf is only contacted when the query changes or a prefetch triggers.
 #
-#   - lazy_fetch_threshold: rows before the loaded window end that trigger the
-#     next fetch.  Default 10.
+#   - No timers run while the user is idle (stable query, cursor not near end).
 #
-#   - poll_ms: how often the widget polls fzf for updates.  Default 100ms.
-#     A 20ms fast-poll fires for the first 500ms after startup and after each
-#     query change so initial results appear quickly.
-#
-# Run: perl 34_lazy_fetch.pl
+# Debug: FZFW_DEBUG=1 FZFW_LOG=/tmp/fzfw.log perl 34_lazy_fetch.pl
+# Run:   perl 34_lazy_fetch.pl
 
 use strict ;
 use warnings ;
@@ -33,12 +27,9 @@ use Gtk3::FzfWidget ;
 Gtk3->init() ;
 
 # ---- Iterator coderef --------------------------------------------------------
-# The coderef is called repeatedly by ItemWriter in the writer child.
-# Each call returns an arrayref of items (up to BATCH items), or undef
-# when there are no more items.  This avoids building the full array in memory.
 
-my $TOTAL = 500_000 ;
-my $BATCH = 1_000 ;
+my $TOTAL  = 500_000 ;
+my $BATCH  = 1_000 ;
 my $cursor = 0 ;
 
 my $item_iter = sub
@@ -71,18 +62,9 @@ my $widget = Gtk3::FzfWidget->new(
 		{
 		theme => 'dark',
 
-		# First 50 rows shown immediately; more loaded on scroll.
-		# Increase if you want more rows visible before first scroll.
-		lazy_fetch_initial   => 50,
-
-		# Rows fetched each time the cursor nears the end of loaded data.
-		lazy_fetch_page      => 100,
-
-		# Fetch more when cursor is within this many rows of the end.
-		lazy_fetch_threshold => 20,
-
-		# Poll interval after the 500ms fast-startup window.
-		poll_ms              => 100,
+		# Fetch this many rows ahead of the cursor so data is ready
+		# before the display end is reached.
+		prefetch_buffer => 100,
 
 		# Debounce typing: longer delay avoids hammering fzf while
 		# it is still indexing 500k items.

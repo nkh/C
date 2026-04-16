@@ -143,26 +143,12 @@ my $widget = Gtk3::FzfWidget->new(
 			[  undef, 500],
 			],
 
-		# lazy_fetch_initial: integer — rows fetched from fzf immediately after
-		# a query change. Only this many rows are transferred over HTTP before
-		# the widget becomes responsive. Further rows are fetched on demand as
-		# the user scrolls toward the end of what is loaded.
-		# Reduce for very slow connections; increase if you want more rows
-		# available before scrolling begins.
-		# Default: 300
-		lazy_fetch_initial   => 300,
-
-		# lazy_fetch_page: integer — additional rows fetched from fzf each time
-		# the user scrolls close to the end of the loaded window.
+		# prefetch_buffer: integer — how many additional rows to fetch from fzf
+		# ahead of the current cursor position. When the cursor reaches
+		# (loaded_count - prefetch_buffer), the next page is fetched in the
+		# background so it is ready before the display end is reached.
 		# Default: 100
-		lazy_fetch_page      => 100,
-
-		# lazy_fetch_threshold: integer — how many rows before the bottom of the
-		# loaded window triggers the next page fetch. When the cursor is within
-		# this many rows of the last loaded row, the next page is prefetched.
-		# Set to 0 to fetch only when the cursor reaches the very last row.
-		# Default: 50
-		lazy_fetch_threshold => 50,
+		prefetch_buffer => 100,
 
 		# ------------------------------------------------------------------
 		# Window geometry

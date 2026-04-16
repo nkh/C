@@ -282,6 +282,7 @@ $self->{pixbuf_col}            = undef ;
 $self->{debounce_timer}        = undef ;
 $self->{query_buffer}          = undef ;
 $self->{frozen}                = 0 ;
+$self->{loading}               = 0 ;
 $self->{last_query}            = undef ;
 $self->{local_pos}             = 0 ;
 $self->{local_selected}        = {} ;
