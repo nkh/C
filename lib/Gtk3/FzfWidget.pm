@@ -1391,6 +1391,10 @@ $self->{_backend}->fetch_async($want, sub
 	$self->{_prefetch_at} = $new_count - $self->{prefetch_buffer} ;
 	$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 
+	# Clamp local_pos in case timing left it beyond the new window
+	$self->{local_pos} = $new_count - 1
+		if $self->{local_pos} >= $new_count && $new_count > 0 ;
+
 	$self->_dbg("prefetch_more: got $new_count (was $old_count) mc=$mc prefetch_at=$self->{_prefetch_at}") ;
 
 	if ($new_count > $old_count)
@@ -1491,11 +1495,30 @@ $self->{_load_timer} = Glib::Timeout->add(
 			return 0 ;
 			}
 
-		# Fire a lightweight query to update _total_count.
-		$self->{_backend}->fetch_async(1, sub
+		# Fire a lightweight fetch to update _total_count and _match_count.
+		$self->{_backend}->fetch_async($self->{prefetch_buffer} * 2, sub
 			{
 			my ($m, $mc, $tc) = @_ ;
-			$self->{_total_count} = $tc if defined $tc ;
+			return unless defined $tc ;
+			$self->{_total_count} = $tc ;
+
+			return unless defined $mc && $mc != $self->{_match_count} ;
+			return unless $m && @$m ;
+
+			my @new_indices = map { $_->{index} } @$m ;
+
+			# Don't replace the current window if it would invalidate local_pos.
+			return if scalar(@new_indices) <= $self->{local_pos} ;
+
+			$self->{_match_count}   = $mc ;
+			$self->{_match_indices} = \@new_indices ;
+			$self->{_visible_set}   = { map { $_ => 1 } @new_indices } ;
+			my $fetched = scalar @new_indices ;
+			$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
+			$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
+			$self->{_filter_model}->refilter() ;
+			$self->_rebuild_visible_markup() ;
+			$self->_update_status_label() ;
 			}) ;
 
 		return 1 ;
@@ -2103,7 +2126,12 @@ my ($iter) = @_ ;
 my @all ;
 while (defined(my $batch = $iter->()))
 	{
-	push @all, ref $batch ? @$batch : $batch ;
+	my @items = ref $batch ? @$batch : ($batch) ;
+	for my $item (@items)
+		{
+		$item = decode_utf8($item) if defined $item && !is_utf8($item) ;
+		}
+	push @all, @items ;
 	}
 return \@all ;
 }
@@ -2120,7 +2148,9 @@ my $query = $self->{entry}->get_text() ;
 
 for my $i (0 .. $#$item_list)
 	{
-	my $text    = $item_list->[$i] // '' ;
+	my $text = $item_list->[$i] // '' ;
+	$text    = decode_utf8($text) if !is_utf8($text) ;
+	$item_list->[$i] = $text ;
 	my $display = $self->{transform_fn}
 		? ($self->{transform_fn}->($text) // $text)
 		: $text ;
