@@ -2097,6 +2097,19 @@ $self->{process}->set_items($items, $effective_query) ;
 
 # ------------------------------------------------------------------------------
 
+sub _drain_iterator
+{
+my ($iter) = @_ ;
+my @all ;
+while (defined(my $batch = $iter->()))
+	{
+	push @all, ref $batch ? @$batch : $batch ;
+	}
+return \@all ;
+}
+
+# ------------------------------------------------------------------------------
+
 sub _populate_store
 {
 my ($self, $item_list) = @_ ;
@@ -2135,7 +2148,7 @@ unless ($ok)
 	return ;
 	}
 
-my $item_list = ref $items eq 'CODE' ? $items->() : $items ;
+my $item_list = ref $items eq 'CODE' ? _drain_iterator($items) : $items ;
 $self->{_all_items} = $item_list ;
 $self->_populate_store($item_list) ;
 
@@ -2144,7 +2157,7 @@ push @extra_opts, '--exact'  if ($self->{search_mode} // '') eq 'exact' ;
 push @extra_opts, '--prefix' if ($self->{search_mode} // '') eq 'prefix' ;
 
 $self->{process} = Gtk3::FzfWidget::Process->new(
-	items  => $items,
+	items  => $item_list,
 	config =>
 		{
 		fzf_opts       => [@{$self->{fzf_opts}}, @extra_opts],
