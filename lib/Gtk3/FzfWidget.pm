@@ -1395,7 +1395,28 @@ $self->{_backend}->fetch_async($want, sub
 
 	if ($new_count > $old_count)
 		{
+		my $query = $self->{entry}->get_text() ;
+		my $store = $self->{list_store} ;
+
+		for my $filter_row ($old_count .. $new_count - 1)
+			{
+			my $orig_idx = $self->{_match_indices}[$filter_row] ;
+			next unless defined $orig_idx ;
+			my $text    = $self->{_all_items}[$orig_idx] // '' ;
+			my $display = $self->{transform_fn}
+				? ($self->{transform_fn}->($text) // $text)
+				: $text ;
+			my $markup = $self->_make_markup(
+				$display,
+				$self->_get_positions($display, $query),
+				0, undef, $text,
+				) ;
+			my $siter = $store->get_iter(Gtk3::TreePath->new_from_string("$orig_idx")) ;
+			$store->set($siter, 0, $markup) if $siter ;
+			}
+
 		$self->{_filter_model}->refilter() ;
+		$self->_update_status_label() ;
 		}
 	}) ;
 }
@@ -2024,9 +2045,18 @@ if ($self->{debounce_timer})
 	$self->{debounce_timer} = undef ;
 	}
 
-$self->{_backend}->stop() if $self->{_backend} ;
-$self->{_backend} = undef ;
-$self->{process}->stop() if $self->{process} ;
+# SocketBackend::stop() also stops the process; call process->stop()
+# only if there is no backend (e.g. before fzf connected).
+if ($self->{_backend})
+	{
+	$self->{_backend}->stop() ;
+	$self->{_backend} = undef ;
+	}
+elsif ($self->{process})
+	{
+	$self->{process}->stop() ;
+	}
+
 $self->{process} = undef ;
 }
 
