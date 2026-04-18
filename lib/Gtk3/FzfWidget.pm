@@ -2144,22 +2144,52 @@ my ($self, $item_list) = @_ ;
 
 $self->{list_store}->clear() ;
 
-my $query = $self->{entry}->get_text() ;
+my $total   = scalar @$item_list ;
+my $BATCH   = 2000 ;
+my $offset  = 0 ;
+my $query   = $self->{entry}->get_text() ;
 
-for my $i (0 .. $#$item_list)
+$self->_dbg("populate_store: $total rows, batch=$BATCH") ;
+
+# Populate in idle batches so the GTK main loop stays responsive
+# and the window appears before all rows are inserted.
+my $idle_cb ;
+$idle_cb = sub
 	{
-	my $text = $item_list->[$i] // '' ;
-	$text    = decode_utf8($text) if !is_utf8($text) ;
-	$item_list->[$i] = $text ;
-	my $display = $self->{transform_fn}
-		? ($self->{transform_fn}->($text) // $text)
-		: $text ;
-	my $markup = $self->_make_markup($display, [], 0, undef, $text) ;
-	my $iter   = $self->{list_store}->append() ;
-	$self->{list_store}->set($iter, 0, $markup, 1, 0) ;
-	}
+	return 0 unless $self->{list_store} ;   # widget destroyed
 
-$self->_dbg("populate_store: " . scalar(@$item_list) . " rows inserted") ;
+	my $end = $offset + $BATCH ;
+	$end    = $total if $end > $total ;
+
+	for my $i ($offset .. $end - 1)
+		{
+		my $text = $item_list->[$i] // '' ;
+		$text = decode_utf8($text) if !is_utf8($text) ;
+		$item_list->[$i] = $text ;
+		my $display = $self->{transform_fn}
+			? ($self->{transform_fn}->($text) // $text)
+			: $text ;
+		my $markup = $self->_make_markup($display, [], 0, undef, $text) ;
+		my $iter   = $self->{list_store}->append() ;
+		$self->{list_store}->set($iter, 0, $markup, 1, 0) ;
+		}
+
+	$offset = $end ;
+
+	# Refilter so newly inserted rows that are in _visible_set become
+	# visible immediately, without waiting for the full store to load.
+	$self->{_filter_model}->refilter() if $self->{_filter_model} ;
+
+	if ($offset < $total)
+		{
+		return 1 ;   # keep idling
+		}
+
+	$self->_dbg("populate_store: complete, $total rows inserted") ;
+	return 0 ;
+	} ;
+
+Glib::Idle->add($idle_cb) ;
 }
 
 # ------------------------------------------------------------------------------
