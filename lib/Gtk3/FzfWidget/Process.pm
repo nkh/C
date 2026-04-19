@@ -493,6 +493,16 @@ return $self->{client}->get_more_matches($offset) ;
 
 # ------------------------------------------------------------------------------
 
+sub post_sync
+{
+my ($self, $action) = @_ ;
+
+return unless $self->{poller} ;
+$self->{poller}->post_sync($action) ;
+}
+
+# ------------------------------------------------------------------------------
+
 sub post_action
 {
 my ($self, $action) = @_ ;

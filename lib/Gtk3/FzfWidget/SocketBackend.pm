@@ -56,10 +56,8 @@ my ($self, $query, $limit, $cb) = @_ ;
 
 _log("query_async q='$query' limit=$limit") ;
 
-# Tell fzf to switch to the new query first, then fetch state.
-# post_action is fire-and-forget (async fork); we fetch state immediately
-# after — fzf processes the action before responding to the GET.
-$self->{process}->post_action("change-query($query)") ;
+# Send change-query synchronously so fzf has processed it before the GET.
+$self->{process}->post_sync("change-query($query)") ;
 
 $self->{process}->get_state_async($limit, sub
 	{

@@ -106,6 +106,36 @@ $self->_request("/?limit=$limit&offset=$offset", $cb, 'matches') ;
 # ------------------------------------------------------------------------------
 # Post an action (fire-and-forget, still async but we don't care about result).
 
+# Synchronous POST — blocks until fzf acknowledges.  Used for change-query
+# so the subsequent async GET sees the updated query state.
+sub post_sync
+{
+my ($self, $action) = @_ ;
+
+my $sock = IO::Socket::INET->new(
+	PeerHost => $self->{host},
+	PeerPort => $self->{port},
+	Proto    => 'tcp',
+	Timeout  => 2,
+	) or return ;
+
+$sock->autoflush(1) ;
+my $len = length($action) ;
+my $req =
+	"POST / HTTP/1.1\r\n"
+	. "Host: localhost\r\n"
+	. "Content-Length: $len\r\n"
+	. "Connection: close\r\n"
+	. "\r\n"
+	. $action ;
+eval { print $sock $req } ;
+# Read and discard response so fzf doesn't get a broken pipe
+eval { local $/ ; my $dummy = <$sock> } ;
+$sock->close() ;
+}
+
+# ------------------------------------------------------------------------------
+
 sub post_action
 {
 my ($self, $action) = @_ ;

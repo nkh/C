@@ -953,13 +953,19 @@ $self->{_fetch_in_flight} = 0 ;
 # (text comes back in the fzf HTTP response and is stored in _match_indices
 # via _all_items lookups — so we must pre-populate via the source).
 #
-# For coderefs: re-run a fresh iterator from the config if available,
-# otherwise _all_items stays empty and text shows as ''.
-# Simplest correct approach: drain synchronously here (widget is now shown).
+# For coderefs, drain into _all_items via Glib::Idle so the widget is
+# responsive immediately.  The first query result may show empty text for
+# items not yet drained; they fill in on the next render.
 if (ref $self->{_items_src} eq 'CODE' && !@{$self->{_all_items}})
 	{
-	$self->_dbg("on_process_ready: draining coderef into _all_items") ;
-	$self->{_all_items} = _drain_iterator($self->{_items_src}) ;
+	Glib::Idle->add(sub
+		{
+		$self->_dbg("idle: draining coderef into _all_items") ;
+		$self->{_all_items} = _drain_iterator($self->{_items_src}) ;
+		# Rebuild store now that text is available
+		$self->_rebuild_store() if @{$self->{_match_indices}} ;
+		return 0 ;
+		}) ;
 	}
 
 $self->_query_backend($query) ;
@@ -1066,14 +1072,14 @@ if ($keyval == Gtk3::Gdk::KEY_Up)
 
 if ($keyval == Gtk3::Gdk::KEY_Page_Down)
 	{
-	my $step = $self->{page_step} // (scalar(@{$self->{_match_indices}}) - 1) || 10 ;
+	my $step = $self->{page_step} // $self->_visible_row_count() ;
 	$self->_navigate($step) ;
 	return 1 ;
 	}
 
 if ($keyval == Gtk3::Gdk::KEY_Page_Up)
 	{
-	my $step = $self->{page_step} // (scalar(@{$self->{_match_indices}}) - 1) || 10 ;
+	my $step = $self->{page_step} // $self->_visible_row_count() ;
 	$self->_navigate(-$step) ;
 	return 1 ;
 	}
@@ -1191,6 +1197,16 @@ if ($self->{on_cursor_change})
 		$self->{on_cursor_change}->($self, $text, $orig_idx) ;
 		}
 	}
+}
+
+# ------------------------------------------------------------------------------
+
+sub _visible_row_count
+{
+my ($self) = @_ ;
+my ($start, $end) = $self->{tree_view}->get_visible_range() ;
+return 10 unless defined $start && defined $end ;
+return $end->to_string() - $start->to_string() + 1 ;
 }
 
 # ------------------------------------------------------------------------------
