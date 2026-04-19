@@ -258,6 +258,8 @@ $self->{instance_id}           = ++$widget_seq ;
 $self->{process}               = undef ;
 $self->{_backend}              = undef ;   # FzfBackend instance
 $self->{_all_items}            = [] ;      # all item strings, index = original index
+	$self->{_row_iters}            = [] ;      # store row -> Gtk3::TreeIter (O(1) lookup)
+	$self->{_items_src}            = undef ;   # original items source (arrayref or coderef)
 $self->{_match_indices}        = [] ;      # ordered arrayref of matching indices (fetched window)
 $self->{_match_count}          = 0 ;       # total matches for current query
 $self->{_total_count}          = 0 ;       # total items known to backend
@@ -944,6 +946,22 @@ $self->_dbg("send_query: q='$query'") ;
 $self->{on_query_change}->($self, $query) if $self->{on_query_change} ;
 
 $self->{_fetch_in_flight} = 0 ;
+# If source was a coderef, drain it now into _all_items in idle batches.
+# ItemWriter already consumed the coderef in its forked child; we need a
+# separate drain here for text lookup.  Use the same coderef — but it may
+# already be exhausted.  Store items received from fzf matches as fallback
+# (text comes back in the fzf HTTP response and is stored in _match_indices
+# via _all_items lookups — so we must pre-populate via the source).
+#
+# For coderefs: re-run a fresh iterator from the config if available,
+# otherwise _all_items stays empty and text shows as ''.
+# Simplest correct approach: drain synchronously here (widget is now shown).
+if (ref $self->{_items_src} eq 'CODE' && !@{$self->{_all_items}})
+	{
+	$self->_dbg("on_process_ready: draining coderef into _all_items") ;
+	$self->{_all_items} = _drain_iterator($self->{_items_src}) ;
+	}
+
 $self->_query_backend($query) ;
 }
 
@@ -1217,8 +1235,7 @@ for my $row ($old_pos, $new_pos)
 	my $orig_idx = $self->{_match_indices}[$row] ;
 	next unless defined $orig_idx ;
 
-	my $path = Gtk3::TreePath->new_from_string("$row") ;
-	my $iter = $store->get_iter($path) ;
+	my $iter = $self->{_row_iters}[$row] ;
 	next unless $iter ;
 
 	my $text    = $self->{_all_items}[$orig_idx] // '' ;
@@ -1381,6 +1398,7 @@ $self->{_backend}->fetch_async($want, sub
 				3, $cell_bg // '',
 				4, $cell_bg ? 1 : 0,
 				) ;
+			$self->{_row_iters}[$row] = $iter ;
 			}
 
 		$self->_update_status_label() ;
@@ -1395,14 +1413,13 @@ sub _rebuild_store
 {
 my ($self, $query) = @_ ;
 
-# Replace all store contents with the current _match_indices window.
-# Called on query change. O(visible_rows), not O(total_items).
 $query //= $self->{entry}->get_text() ;
 my $store  = $self->{list_store} ;
 my $c      = $self->{colors} ;
 my $stripe = $self->{row_striping} ;
 
 $store->clear() ;
+$self->{_row_iters} = [] ;   # row -> Gtk3::TreeIter, O(1) lookup
 
 for my $row (0 .. $#{$self->{_match_indices}})
 	{
@@ -1431,6 +1448,7 @@ for my $row (0 .. $#{$self->{_match_indices}})
 		3, $cell_bg // '',
 		4, $cell_bg ? 1 : 0,
 		) ;
+	$self->{_row_iters}[$row] = $iter ;
 
 	if ($self->{image_fn})
 		{
@@ -2134,15 +2152,20 @@ unless ($ok)
 	return ;
 	}
 
-my $item_list = ref $items eq 'CODE' ? _drain_iterator($items) : $items ;
-$self->{_all_items} = $item_list ;
+# For plain arrayrefs: store directly.
+# For coderefs: pass to ItemWriter as-is (it handles coderefs natively in
+# a forked child).  Populate _all_items from the same array so text lookup
+# works; for coderefs we populate lazily after widget is shown.
+my $item_list = ref $items eq 'CODE' ? [] : $items ;
+$self->{_all_items}   = $item_list ;
+$self->{_items_src}   = $items ;   # original source (arrayref or coderef)
 
 my @extra_opts ;
 push @extra_opts, '--exact'  if ($self->{search_mode} // '') eq 'exact' ;
 push @extra_opts, '--prefix' if ($self->{search_mode} // '') eq 'prefix' ;
 
 $self->{process} = Gtk3::FzfWidget::Process->new(
-	items  => $item_list,
+	items  => $self->{_items_src},
 	config =>
 		{
 		fzf_opts       => [@{$self->{fzf_opts}}, @extra_opts],
@@ -2181,6 +2204,22 @@ $self->{query_buffer} = undef ;
 if ($query ne '')
 	{
 	$self->{entry}->set_text($query) ;
+	}
+
+# If source was a coderef, drain it now into _all_items in idle batches.
+# ItemWriter already consumed the coderef in its forked child; we need a
+# separate drain here for text lookup.  Use the same coderef — but it may
+# already be exhausted.  Store items received from fzf matches as fallback
+# (text comes back in the fzf HTTP response and is stored in _match_indices
+# via _all_items lookups — so we must pre-populate via the source).
+#
+# For coderefs: re-run a fresh iterator from the config if available,
+# otherwise _all_items stays empty and text shows as ''.
+# Simplest correct approach: drain synchronously here (widget is now shown).
+if (ref $self->{_items_src} eq 'CODE' && !@{$self->{_all_items}})
+	{
+	$self->_dbg("on_process_ready: draining coderef into _all_items") ;
+	$self->{_all_items} = _drain_iterator($self->{_items_src}) ;
 	}
 
 $self->_query_backend($query) ;
@@ -2307,9 +2346,7 @@ for my $target_idx (@{$self->{initial_selection}})
 			{
 			$self->{local_selected}{$target_idx} = 1 ;
 
-			# Update checkbox in store: find store row where col 1 = orig_idx
-			my $path = Gtk3::TreePath->new_from_string("$filter_row") ;
-			my $siter = $self->{list_store}->get_iter($path) ;
+			my $siter = $self->{_row_iters}[$filter_row] ;
 			$self->{list_store}->set($siter, 2, 1) if $siter ;
 			last ;
 			}
