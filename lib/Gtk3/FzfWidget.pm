@@ -257,11 +257,8 @@ $self->set_spacing(0) ;
 $self->{instance_id}           = ++$widget_seq ;
 $self->{process}               = undef ;
 $self->{_backend}              = undef ;   # FzfBackend instance
-$self->{_filter_model}         = undef ;   # Gtk3::TreeModelFilter
 $self->{_all_items}            = [] ;      # all item strings, index = original index
-$self->{_store_iters}          = [] ;      # orig_index -> Gtk3::TreeIter (O(1) lookup)
 $self->{_match_indices}        = [] ;      # ordered arrayref of matching indices (fetched window)
-$self->{_visible_set}          = {} ;      # hash { index => 1 } for visible-func
 $self->{_match_count}          = 0 ;       # total matches for current query
 $self->{_total_count}          = 0 ;       # total items known to backend
 $self->{_fetch_in_flight}      = 0 ;       # 1 while fetch_async is pending
@@ -585,25 +582,16 @@ if (@css)
 	$self->{_css_provider} = $provider ;
 	}
 
-# ListStore: col 0 = markup, col 1 = selected flag (multi), col 2 = pixbuf
-# col 3 = cell-background string, col 4 = cell-background-set boolean
-# Row N in the store corresponds to _all_items[N] (original index = N).
+# ListStore: col 0 = markup, col 1 = original index, col 2 = selected flag,
+# col 3 = cell-background string, col 4 = cell-background-set boolean,
+# col 5 = pixbuf (optional)
+# Only matching rows are in the store. Row N corresponds to _match_indices[N].
 $self->{list_store} = Gtk3::ListStore->new(
+	'Glib::String', 'Glib::Int', 'Glib::Boolean',
 	'Glib::String', 'Glib::Boolean', 'Gtk3::Gdk::Pixbuf',
-	'Glib::String', 'Glib::Boolean',
 	) ;
 
-# Filter model: visible-func checks _visible_set{row_index}
-$self->{_filter_model} = Gtk3::TreeModelFilter->new($self->{list_store}) ;
-$self->{_filter_model}->set_visible_func(sub
-	{
-	my ($model, $iter) = @_ ;
-	my $path = $model->get_path($iter) ;
-	my $idx  = ($path->get_indices())[0] ;
-	return exists $self->{_visible_set}{$idx} ? 1 : 0 ;
-	}) ;
-
-$self->{tree_view} = Gtk3::TreeView->new_with_model($self->{_filter_model}) ;
+$self->{tree_view} = Gtk3::TreeView->new_with_model($self->{list_store}) ;
 $self->{tree_view}->set_name($tv_name) ;
 $self->{tree_view}->set_headers_visible(0) ;
 $self->{tree_view}->set_enable_search(0) ;
@@ -622,7 +610,7 @@ if ($self->{image_fn})
 	$toggle_cell->set(activatable => 0) ;
 	$toggle_cell->set(cell_background => $c->{checkbox_bg}) if $c->{checkbox_bg} ;
 	$toggle_col->pack_start($toggle_cell, 0) ;
-	$toggle_col->add_attribute($toggle_cell, 'active', 1) ;
+	$toggle_col->add_attribute($toggle_cell, 'active', 2) ;
 	$toggle_col->set_sizing('fixed') if $self->{image_fn} ;
 	$toggle_col->set_visible($self->{multi} ? 1 : 0) ;
 	$self->{tree_view}->append_column($toggle_col) ;
@@ -635,7 +623,7 @@ my $pixbuf_cell     = Gtk3::CellRendererPixbuf->new() ;
 $pixbuf_cell->set('width'  => $self->{image_max_width}) ;
 $pixbuf_cell->set('height' => $self->{image_max_height}) ;
 $self->{pixbuf_col}->pack_start($pixbuf_cell, 0) ;
-$self->{pixbuf_col}->add_attribute($pixbuf_cell, 'pixbuf', 2) ;
+$self->{pixbuf_col}->add_attribute($pixbuf_cell, 'pixbuf', 5) ;
 $self->{pixbuf_col}->set_visible(0) ;
 $self->{pixbuf_col}->set_sizing('fixed') if $self->{image_fn} ;
 $self->{tree_view}->append_column($self->{pixbuf_col}) ;
@@ -1216,49 +1204,40 @@ sub _redraw_cursor
 {
 my ($self, $old_pos, $new_pos) = @_ ;
 
+# Store row = filter-model row (plain ListStore, no filter).
+# Only update the two rows that changed: old cursor and new cursor.
 my $query = $self->{entry}->get_text() ;
+my $store = $self->{list_store} ;
+my $c     = $self->{colors} ;
+my $stripe = $self->{row_striping} ;
 
-for my $filter_row ($old_pos, $new_pos)
+for my $row ($old_pos, $new_pos)
 	{
-	next if $filter_row < 0 ;
-	my $orig_idx = $self->{_match_indices}[$filter_row] ;
+	next if $row < 0 ;
+	my $orig_idx = $self->{_match_indices}[$row] ;
 	next unless defined $orig_idx ;
 
-	my $text = $self->{_all_items}[$orig_idx] // '' ;
+	my $path = Gtk3::TreePath->new_from_string("$row") ;
+	my $iter = $store->get_iter($path) ;
+	next unless $iter ;
+
+	my $text    = $self->{_all_items}[$orig_idx] // '' ;
 	my $display = $self->{transform_fn}
 		? ($self->{transform_fn}->($text) // $text)
 		: $text ;
-
-	my $is_cursor = ($filter_row == $self->{local_pos}) ? 1 : 0 ;
-
-	# For ANSI mode the original text (with escape codes) is in _all_items.
-	my $markup = $self->_make_markup(
+	my $is_cursor = ($row == $self->{local_pos}) ? 1 : 0 ;
+	my $markup    = $self->_make_markup(
 		$display,
 		$self->_get_positions($display, $query),
-		$is_cursor,
-		undef,
-		$text,
+		$is_cursor, undef, $text,
 		) ;
-
-	# Write markup to the store row at orig_idx (store row = original index).
-	my $store_iter = $self->{_store_iters}[$orig_idx] ;
-	next unless defined $store_iter ;
-
-	$self->{list_store}->set($store_iter, 0, $markup) ;
-
-	my $c       = $self->{colors} ;
-	my $stripe  = $self->{row_striping} ;
 	my $cell_bg = $is_cursor
 		? ($c->{cursor_bg} // '#2d6db5')
-		: ($stripe ? $stripe->[$filter_row % scalar @$stripe] : undef) ;
+		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
-	$self->{list_store}->set($store_iter, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
-
-	if ($self->{multi})
-		{
-		$self->{list_store}->set($store_iter, 1,
-			($self->{local_selected}{$orig_idx} ? 1 : 0)) ;
-		}
+	$store->set($iter, 0, $markup, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+	$store->set($iter, 2, ($self->{local_selected}{$orig_idx} ? 1 : 0))
+		if $self->{multi} ;
 	}
 }
 
@@ -1310,7 +1289,6 @@ $self->{last_query}     = $query ;
 $self->{_match_count}   = $mc ;
 $self->{_total_count}   = $tc ;
 $self->{_match_indices} = [ map { $_->{index} } @$matches ] ;
-$self->{_visible_set}   = { map { $_ => 1 } @{$self->{_match_indices}} } ;
 $self->{local_pos}      = 0 ;
 
 my $fetched = scalar @{$self->{_match_indices}} ;
@@ -1319,22 +1297,16 @@ $self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 
 $self->_dbg("apply_query_result: fetched=$fetched mc=$mc prefetch_at=$self->{_prefetch_at}") ;
 
-# Stop the load timer once fzf reports it has indexed all items.
 if ($self->{_load_timer} && $tc >= scalar @{$self->{_all_items}})
 	{
 	$self->_dbg("apply_query_result: all items indexed — stopping load timer") ;
 	$self->_stop_load_timer() ;
 	}
 
-# Refilter — GTK calls visible-func for every store row
-$self->{_filter_model}->refilter() ;
-
-# Rebuild markup for all visible rows (cursor at row 0)
-$self->_rebuild_visible_markup($query) ;
+# Rebuild the store: clear and insert only the matching rows.
+$self->_rebuild_store($query) ;
 
 $self->_update_status_label() ;
-
-# Scroll to top
 $self->{tree_view}->scroll_to_point(0, 0) if $fetched > 0 ;
 }
 
@@ -1371,106 +1343,107 @@ $self->{_backend}->fetch_async($want, sub
 	$self->{_total_count} = $tc ;
 	$self->{_match_indices} = [ map { $_->{index} } @$matches ] ;
 
-	# Add newly fetched indices to visible set
-	for my $idx (@{$self->{_match_indices}})
-		{
-		$self->{_visible_set}{$idx} = 1 ;
-		}
-
 	my $new_count = scalar @{$self->{_match_indices}} ;
 	$self->{_prefetch_at} = $new_count - $self->{prefetch_buffer} ;
 	$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 
-	# Clamp local_pos in case timing left it beyond the new window
 	$self->{local_pos} = $new_count - 1
 		if $self->{local_pos} >= $new_count && $new_count > 0 ;
 
-	$self->_dbg("prefetch_more: got $new_count (was $old_count) mc=$mc prefetch_at=$self->{_prefetch_at}") ;
+	$self->_dbg("prefetch_more: got $new_count (was $old_count) mc=$mc") ;
 
 	if ($new_count > $old_count)
 		{
 		my $query = $self->{entry}->get_text() ;
 		my $store = $self->{list_store} ;
+		my $stripe = $self->{row_striping} ;
 
-		for my $filter_row ($old_count .. $new_count - 1)
+		for my $row ($old_count .. $new_count - 1)
 			{
-			my $orig_idx = $self->{_match_indices}[$filter_row] ;
+			my $orig_idx = $self->{_match_indices}[$row] ;
 			next unless defined $orig_idx ;
 			my $text    = $self->{_all_items}[$orig_idx] // '' ;
 			my $display = $self->{transform_fn}
 				? ($self->{transform_fn}->($text) // $text)
 				: $text ;
-			my $markup = $self->_make_markup(
-				$display,
-				$self->_get_positions($display, $query),
+			my $markup  = $self->_make_markup(
+				$display, $self->_get_positions($display, $query),
 				0, undef, $text,
 				) ;
-			my $stripe  = $self->{row_striping} ;
 			my $cell_bg = $stripe
-				? $stripe->[$filter_row % scalar @$stripe]
+				? $stripe->[$row % scalar @$stripe]
 				: undef ;
-			my $siter = $self->{_store_iters}[$orig_idx] ;
-			$store->set($siter, 0, $markup, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) if $siter ;
+			my $iter = $store->append() ;
+			$store->set($iter,
+				0, $markup,
+				1, $orig_idx,
+				2, ($self->{local_selected}{$orig_idx} ? 1 : 0),
+				3, $cell_bg // '',
+				4, $cell_bg ? 1 : 0,
+				) ;
 			}
 
-		$self->{_filter_model}->refilter() ;
 		$self->_update_status_label() ;
 		}
 	}) ;
 }
-
 # ------------------------------------------------------------------------------
 # Rebuild markup for all currently visible (matching) rows.
 # Called after query changes when all rows need new highlight positions.
 
-sub _rebuild_visible_markup
+sub _rebuild_store
 {
 my ($self, $query) = @_ ;
 
+# Replace all store contents with the current _match_indices window.
+# Called on query change. O(visible_rows), not O(total_items).
 $query //= $self->{entry}->get_text() ;
 my $store  = $self->{list_store} ;
 my $c      = $self->{colors} ;
 my $stripe = $self->{row_striping} ;
 
-for my $filter_row (0 .. $#{$self->{_match_indices}})
+$store->clear() ;
+
+for my $row (0 .. $#{$self->{_match_indices}})
 	{
-	my $orig_idx = $self->{_match_indices}[$filter_row] ;
+	my $orig_idx = $self->{_match_indices}[$row] ;
 	next unless defined $orig_idx ;
 
 	my $text    = $self->{_all_items}[$orig_idx] // '' ;
 	my $display = $self->{transform_fn}
 		? ($self->{transform_fn}->($text) // $text)
 		: $text ;
-
-	my $is_cursor = ($filter_row == $self->{local_pos}) ? 1 : 0 ;
+	my $is_cursor = ($row == $self->{local_pos}) ? 1 : 0 ;
 	my $markup    = $self->_make_markup(
 		$display,
 		$self->_get_positions($display, $query),
 		$is_cursor, undef, $text,
 		) ;
-
 	my $cell_bg = $is_cursor
 		? ($c->{cursor_bg} // '#2d6db5')
-		: ($stripe ? $stripe->[$filter_row % scalar @$stripe] : undef) ;
+		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
-	my $store_iter = $self->{_store_iters}[$orig_idx] ;
-	next unless defined $store_iter ;
-
-	$store->set($store_iter, 0, $markup, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+	my $iter = $store->append() ;
+	$store->set($iter,
+		0, $markup,
+		1, $orig_idx,
+		2, ($self->{local_selected}{$orig_idx} ? 1 : 0),
+		3, $cell_bg // '',
+		4, $cell_bg ? 1 : 0,
+		) ;
 
 	if ($self->{image_fn})
 		{
 		my $pb = $self->{image_fn}->($text, $orig_idx) ;
 		if (defined $pb)
 			{
-			$store->set($store_iter, 2, $pb) ;
+			$store->set($iter, 5, $pb) ;
 			$self->{has_images} = 1 ;
 			$self->{pixbuf_col}->set_visible(1) ;
 			}
 		}
 	}
 }
-
 # ------------------------------------------------------------------------------
 # Initial load timer — fires every poll_ms until backend has indexed all items.
 # Stops itself once total_count equals item count.
@@ -1522,12 +1495,10 @@ $self->{_load_timer} = Glib::Timeout->add(
 
 			$self->{_match_count}   = $mc ;
 			$self->{_match_indices} = \@new_indices ;
-			$self->{_visible_set}   = { map { $_ => 1 } @new_indices } ;
 			my $fetched = scalar @new_indices ;
 			$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
 			$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
-			$self->{_filter_model}->refilter() ;
-			$self->_rebuild_visible_markup() ;
+			$self->_rebuild_store() ;
 			$self->_update_status_label() ;
 			}) ;
 
@@ -2027,7 +1998,7 @@ if (@css)
 	}
 
 # Force redraw of all visible rows with new colors
-$self->_rebuild_visible_markup() ;
+$self->_rebuild_store() ;
 }
 
 # ------------------------------------------------------------------------------
@@ -2104,7 +2075,6 @@ $self->_stop_load_timer() ;
 $self->{_backend}->stop() if $self->{_backend} ;
 $self->{_backend}         = undef ;
 $self->{_match_indices}   = [] ;
-$self->{_visible_set}     = {} ;
 $self->{_match_count}     = 0 ;
 $self->{_total_count}     = 0 ;
 $self->{_fetch_in_flight} = 0 ;
@@ -2148,57 +2118,6 @@ return \@all ;
 
 # ------------------------------------------------------------------------------
 
-sub _populate_store
-{
-my ($self, $item_list) = @_ ;
-
-$self->{list_store}->clear() ;
-$self->{_store_iters} = [] ;   # orig_index -> Gtk3::TreeIter
-
-my $total  = scalar @$item_list ;
-my $BATCH  = 5000 ;
-my $offset = 0 ;
-
-$self->_dbg("populate_store: $total rows, batch=$BATCH") ;
-
-my $idle_cb ;
-$idle_cb = sub
-	{
-	return 0 unless $self->{list_store} ;
-
-	my $end = $offset + $BATCH ;
-	$end    = $total if $end > $total ;
-
-	for my $i ($offset .. $end - 1)
-		{
-		my $text = $item_list->[$i] // '' ;
-		$text = decode_utf8($text) if !is_utf8($text) ;
-		$item_list->[$i] = $text ;
-		# Store plain escaped text as placeholder; proper markup with query
-		# highlights is written when the item enters _visible_set.
-		my $escaped = $text ;
-		$escaped =~ s/&/&amp;/g ;
-		$escaped =~ s/</&lt;/g ;
-		$escaped =~ s/>/&gt;/g ;
-		my $iter = $self->{list_store}->append() ;
-		$self->{list_store}->set($iter, 0, $escaped, 1, 0, 3, '', 4, 0) ;
-		$self->{_store_iters}[$i] = $iter ;
-		}
-
-	$offset = $end ;
-
-	if ($offset < $total)
-		{
-		return 1 ;
-		}
-
-	$self->_dbg("populate_store: complete, $total rows") ;
-	return 0 ;
-	} ;
-
-Glib::Idle->add($idle_cb) ;
-}
-
 # ------------------------------------------------------------------------------
 
 sub _start_fzf
@@ -2217,7 +2136,6 @@ unless ($ok)
 
 my $item_list = ref $items eq 'CODE' ? _drain_iterator($items) : $items ;
 $self->{_all_items} = $item_list ;
-$self->_populate_store($item_list) ;
 
 my @extra_opts ;
 push @extra_opts, '--exact'  if ($self->{search_mode} // '') eq 'exact' ;
@@ -2389,9 +2307,10 @@ for my $target_idx (@{$self->{initial_selection}})
 			{
 			$self->{local_selected}{$target_idx} = 1 ;
 
-			# Update checkbox in store
-			my $store_iter = $self->{_store_iters}[$orig_idx] ;
-			$self->{list_store}->set($store_iter, 1, 1) if $store_iter ;
+			# Update checkbox in store: find store row where col 1 = orig_idx
+			my $path = Gtk3::TreePath->new_from_string("$filter_row") ;
+			my $siter = $self->{list_store}->get_iter($path) ;
+			$self->{list_store}->set($siter, 2, 1) if $siter ;
 			last ;
 			}
 		}
@@ -2464,7 +2383,7 @@ $self->{local_selected} = {} ;
 $self->{_toggle_col}->set_visible($self->{multi}) if $self->{_toggle_col} ;
 
 # Rebuild markup to clear any selection highlighting
-$self->_rebuild_visible_markup() ;
+$self->_rebuild_store() ;
 $self->_update_status_label() ;
 }
 
