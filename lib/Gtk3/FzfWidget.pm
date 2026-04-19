@@ -585,11 +585,11 @@ if (@css)
 	}
 
 # ListStore: col 0 = markup, col 1 = selected flag (multi), col 2 = pixbuf
+# col 3 = cell-background string, col 4 = cell-background-set boolean
 # Row N in the store corresponds to _all_items[N] (original index = N).
-# Visibility is controlled by TreeModelFilter + _visible_set hash, so no
-# visible-column is needed in the store.
 $self->{list_store} = Gtk3::ListStore->new(
 	'Glib::String', 'Glib::Boolean', 'Gtk3::Gdk::Pixbuf',
+	'Glib::String', 'Glib::Boolean',
 	) ;
 
 # Filter model: visible-func checks _visible_set{row_index}
@@ -653,26 +653,8 @@ if ($self->{font_family} || $self->{font_size})
 
 $text_col->pack_start($text_cell, 1) ;
 $text_col->add_attribute($text_cell, 'markup', 0) ;
-
-# cell-data-func computes background at paint time from local_pos and striping.
-# Called only for visible rows (~20-30 at a time), so cost is negligible.
-$text_col->set_cell_data_func($text_cell, sub
-	{
-	my ($col, $cell, $model, $iter) = @_ ;
-
-	# Map filter-model row to original store index via _match_indices
-	my $filter_path = $model->get_path($iter) ;
-	my $filter_row  = ($filter_path->get_indices())[0] ;
-	my $c2          = $self->{colors} ;
-	my $stripe      = $self->{row_striping} ;
-
-	my $cell_bg = ($filter_row == $self->{local_pos})
-		? ($c2->{cursor_bg} // '#2d6db5')
-		: ($stripe ? $stripe->[$filter_row % scalar @$stripe] : undef) ;
-
-	$cell->set('cell-background-set', $cell_bg ? 1 : 0) ;
-	$cell->set('cell-background', $cell_bg) if $cell_bg ;
-	}) ;
+$text_col->add_attribute($text_cell, 'cell-background', 3) ;
+$text_col->add_attribute($text_cell, 'cell-background-set', 4) ;
 
 $text_col->set_expand(1) ;
 $text_col->set_sizing('fixed') if $self->{image_fn} ;
@@ -1264,6 +1246,14 @@ for my $filter_row ($old_pos, $new_pos)
 
 	$self->{list_store}->set($store_iter, 0, $markup) ;
 
+	my $c       = $self->{colors} ;
+	my $stripe  = $self->{row_striping} ;
+	my $cell_bg = $is_cursor
+		? ($c->{cursor_bg} // '#2d6db5')
+		: ($stripe ? $stripe->[$filter_row % scalar @$stripe] : undef) ;
+
+	$self->{list_store}->set($store_iter, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+
 	if ($self->{multi})
 		{
 		$self->{list_store}->set($store_iter, 1,
@@ -1415,8 +1405,12 @@ $self->{_backend}->fetch_async($want, sub
 				$self->_get_positions($display, $query),
 				0, undef, $text,
 				) ;
+			my $stripe  = $self->{row_striping} ;
+			my $cell_bg = $stripe
+				? $stripe->[$filter_row % scalar @$stripe]
+				: undef ;
 			my $siter = $store->get_iter(Gtk3::TreePath->new_from_string("$orig_idx")) ;
-			$store->set($siter, 0, $markup) if $siter ;
+			$store->set($siter, 0, $markup, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) if $siter ;
 			}
 
 		$self->{_filter_model}->refilter() ;
@@ -1434,7 +1428,9 @@ sub _rebuild_visible_markup
 my ($self, $query) = @_ ;
 
 $query //= $self->{entry}->get_text() ;
-my $store = $self->{list_store} ;
+my $store  = $self->{list_store} ;
+my $c      = $self->{colors} ;
+my $stripe = $self->{row_striping} ;
 
 for my $filter_row (0 .. $#{$self->{_match_indices}})
 	{
@@ -1453,11 +1449,25 @@ for my $filter_row (0 .. $#{$self->{_match_indices}})
 		$is_cursor, undef, $text,
 		) ;
 
-	my $store_path = Gtk3::TreePath->new_from_string("$orig_idx") ;
-	my $store_iter = $store->get_iter($store_path) ;
+	my $cell_bg = $is_cursor
+		? ($c->{cursor_bg} // '#2d6db5')
+		: ($stripe ? $stripe->[$filter_row % scalar @$stripe] : undef) ;
+
+	my $store_iter = $store->get_iter(Gtk3::TreePath->new_from_string("$orig_idx")) ;
 	next unless defined $store_iter ;
 
-	$store->set($store_iter, 0, $markup) ;
+	$store->set($store_iter, 0, $markup, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+
+	if ($self->{image_fn})
+		{
+		my $pb = $self->{image_fn}->($text, $orig_idx) ;
+		if (defined $pb)
+			{
+			$store->set($store_iter, 2, $pb) ;
+			$self->{has_images} = 1 ;
+			$self->{pixbuf_col}->set_visible(1) ;
+			}
+		}
 	}
 }
 
@@ -2171,14 +2181,10 @@ $idle_cb = sub
 			: $text ;
 		my $markup = $self->_make_markup($display, [], 0, undef, $text) ;
 		my $iter   = $self->{list_store}->append() ;
-		$self->{list_store}->set($iter, 0, $markup, 1, 0) ;
+		$self->{list_store}->set($iter, 0, $markup, 1, 0, 3, '', 4, 0) ;
 		}
 
 	$offset = $end ;
-
-	# Refilter so newly inserted rows that are in _visible_set become
-	# visible immediately, without waiting for the full store to load.
-	$self->{_filter_model}->refilter() if $self->{_filter_model} ;
 
 	if ($offset < $total)
 		{
