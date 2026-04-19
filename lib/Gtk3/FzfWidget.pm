@@ -259,6 +259,7 @@ $self->{process}               = undef ;
 $self->{_backend}              = undef ;   # FzfBackend instance
 $self->{_filter_model}         = undef ;   # Gtk3::TreeModelFilter
 $self->{_all_items}            = [] ;      # all item strings, index = original index
+$self->{_store_iters}          = [] ;      # orig_index -> Gtk3::TreeIter (O(1) lookup)
 $self->{_match_indices}        = [] ;      # ordered arrayref of matching indices (fetched window)
 $self->{_visible_set}          = {} ;      # hash { index => 1 } for visible-func
 $self->{_match_count}          = 0 ;       # total matches for current query
@@ -1240,8 +1241,7 @@ for my $filter_row ($old_pos, $new_pos)
 		) ;
 
 	# Write markup to the store row at orig_idx (store row = original index).
-	my $store_path = Gtk3::TreePath->new_from_string("$orig_idx") ;
-	my $store_iter = $self->{list_store}->get_iter($store_path) ;
+	my $store_iter = $self->{_store_iters}[$orig_idx] ;
 	next unless defined $store_iter ;
 
 	$self->{list_store}->set($store_iter, 0, $markup) ;
@@ -1409,7 +1409,7 @@ $self->{_backend}->fetch_async($want, sub
 			my $cell_bg = $stripe
 				? $stripe->[$filter_row % scalar @$stripe]
 				: undef ;
-			my $siter = $store->get_iter(Gtk3::TreePath->new_from_string("$orig_idx")) ;
+			my $siter = $self->{_store_iters}[$orig_idx] ;
 			$store->set($siter, 0, $markup, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) if $siter ;
 			}
 
@@ -1453,7 +1453,7 @@ for my $filter_row (0 .. $#{$self->{_match_indices}})
 		? ($c->{cursor_bg} // '#2d6db5')
 		: ($stripe ? $stripe->[$filter_row % scalar @$stripe] : undef) ;
 
-	my $store_iter = $store->get_iter(Gtk3::TreePath->new_from_string("$orig_idx")) ;
+	my $store_iter = $self->{_store_iters}[$orig_idx] ;
 	next unless defined $store_iter ;
 
 	$store->set($store_iter, 0, $markup, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
@@ -2153,20 +2153,18 @@ sub _populate_store
 my ($self, $item_list) = @_ ;
 
 $self->{list_store}->clear() ;
+$self->{_store_iters} = [] ;   # orig_index -> Gtk3::TreeIter
 
-my $total   = scalar @$item_list ;
-my $BATCH   = 2000 ;
-my $offset  = 0 ;
-my $query   = $self->{entry}->get_text() ;
+my $total  = scalar @$item_list ;
+my $BATCH  = 5000 ;
+my $offset = 0 ;
 
 $self->_dbg("populate_store: $total rows, batch=$BATCH") ;
 
-# Populate in idle batches so the GTK main loop stays responsive
-# and the window appears before all rows are inserted.
 my $idle_cb ;
 $idle_cb = sub
 	{
-	return 0 unless $self->{list_store} ;   # widget destroyed
+	return 0 unless $self->{list_store} ;
 
 	my $end = $offset + $BATCH ;
 	$end    = $total if $end > $total ;
@@ -2176,22 +2174,25 @@ $idle_cb = sub
 		my $text = $item_list->[$i] // '' ;
 		$text = decode_utf8($text) if !is_utf8($text) ;
 		$item_list->[$i] = $text ;
-		my $display = $self->{transform_fn}
-			? ($self->{transform_fn}->($text) // $text)
-			: $text ;
-		my $markup = $self->_make_markup($display, [], 0, undef, $text) ;
-		my $iter   = $self->{list_store}->append() ;
-		$self->{list_store}->set($iter, 0, $markup, 1, 0, 3, '', 4, 0) ;
+		# Store plain escaped text as placeholder; proper markup with query
+		# highlights is written when the item enters _visible_set.
+		my $escaped = $text ;
+		$escaped =~ s/&/&amp;/g ;
+		$escaped =~ s/</&lt;/g ;
+		$escaped =~ s/>/&gt;/g ;
+		my $iter = $self->{list_store}->append() ;
+		$self->{list_store}->set($iter, 0, $escaped, 1, 0, 3, '', 4, 0) ;
+		$self->{_store_iters}[$i] = $iter ;
 		}
 
 	$offset = $end ;
 
 	if ($offset < $total)
 		{
-		return 1 ;   # keep idling
+		return 1 ;
 		}
 
-	$self->_dbg("populate_store: complete, $total rows inserted") ;
+	$self->_dbg("populate_store: complete, $total rows") ;
 	return 0 ;
 	} ;
 
@@ -2389,8 +2390,7 @@ for my $target_idx (@{$self->{initial_selection}})
 			$self->{local_selected}{$target_idx} = 1 ;
 
 			# Update checkbox in store
-			my $store_path = Gtk3::TreePath->new_from_string("$target_idx") ;
-			my $store_iter = $self->{list_store}->get_iter($store_path) ;
+			my $store_iter = $self->{_store_iters}[$orig_idx] ;
 			$self->{list_store}->set($store_iter, 1, 1) if $store_iter ;
 			last ;
 			}

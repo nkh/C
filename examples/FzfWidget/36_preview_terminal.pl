@@ -43,7 +43,7 @@ my $preview_spec =
 
 my @cmd =
 	(
-	'perl', "$FindBin::Bin/../script/fzfw",
+	'perl', "$FindBin::Bin/../../script/fzfw",
 	'--theme',   'dark',
 	'--multi',
 	'--preview', $preview_spec,

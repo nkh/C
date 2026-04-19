@@ -51,7 +51,7 @@ my $preview_spec = "$script {} {index} {selected} {query} {width} {height}" ;
 
 my @cmd =
 	(
-	'perl', "$FindBin::Bin/../script/fzfw",
+	'perl', "$FindBin::Bin/../../script/fzfw",
 	'--theme',         'dark',
 	'--preview',       $preview_spec,
 	'--preview-cache',
