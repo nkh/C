@@ -56,53 +56,30 @@ my ($self, $query, $limit, $cb) = @_ ;
 
 _log("query_async q='$query' limit=$limit") ;
 
-my $prev_mc = $self->{_mc} ;
-my $attempt = 0 ;
-my $max     = 10 ;   # up to 10 × 50ms = 500ms total
-
-# Send change-query synchronously so fzf processes it before the GET.
+# post_sync blocks until fzf acknowledges the action (HTTP 200).
+# fzf processes HTTP requests sequentially so the next GET sees the new query.
 $self->{process}->post_sync("change-query($query)") ;
 
-my $try ;
-$try = sub
+$self->{process}->get_state_async($limit, sub
 	{
-	$attempt++ ;
+	my ($state) = @_ ;
 
-	$self->{process}->get_state_async($limit, sub
+	unless ($state)
 		{
-		my ($state) = @_ ;
+		_log("query_async: no state returned") ;
+		$cb->(undef, 0, 0) ;
+		return ;
+		}
 
-		unless ($state)
-			{
-			_log("query_async: no state (attempt $attempt)") ;
-			$cb->(undef, 0, 0) ;
-			return ;
-			}
+	$self->{_mc} = $state->{matchCount} // $state->{match_count} // 0 ;
+	$self->{_tc} = $state->{totalCount} // $state->{total_count} // 0 ;
 
-		my $mc = $state->{matchCount} // $state->{match_count} // 0 ;
-		my $tc = $state->{totalCount} // $state->{total_count} // 0 ;
+	my $raw     = $state->{matches} // [] ;
+	my @matches = map { { index => (\$_->{index} // 0), text => (\$_->{text} // '') } } @$raw ;
 
-		# Check if fzf has applied our query using the response's query field.
-		my $resp_query = $state->{query} // '' ;
-		if ($resp_query ne $query && $attempt < $max)
-			{
-			_log("query_async: fzf query='$resp_query' want='$query', retry $attempt/$max") ;
-			Glib::Timeout->add(50, sub { $try->() ; return 0 }) ;
-			return ;
-			}
-
-		$self->{_mc} = $mc ;
-		$self->{_tc} = $tc ;
-
-		my $raw     = $state->{matches} // [] ;
-		my @matches = map { { index => ($_->{index} // 0), text => ($_->{text} // '') } } @$raw ;
-
-		_log("query_async: mc=$mc tc=$tc returned=" . scalar(@matches) . " (attempt $attempt)") ;
-		$cb->(\@matches, $mc, $tc) ;
-		}) ;
-	} ;
-
-$try->() ;
+	_log("query_async: mc=$self->{_mc} tc=$self->{_tc} returned=" . scalar(@matches)) ;
+	$cb->(\@matches, $self->{_mc}, $self->{_tc}) ;
+	}) ;
 }
 
 # ------------------------------------------------------------------------------
