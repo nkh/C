@@ -56,29 +56,53 @@ my ($self, $query, $limit, $cb) = @_ ;
 
 _log("query_async q='$query' limit=$limit") ;
 
-# Send change-query synchronously so fzf has processed it before the GET.
+my $prev_mc = $self->{_mc} ;
+my $attempt = 0 ;
+my $max     = 10 ;   # up to 10 × 50ms = 500ms total
+
+# Send change-query synchronously so fzf processes it before the GET.
 $self->{process}->post_sync("change-query($query)") ;
 
-$self->{process}->get_state_async($limit, sub
+my $try ;
+$try = sub
 	{
-	my ($state) = @_ ;
+	$attempt++ ;
 
-	unless ($state)
+	$self->{process}->get_state_async($limit, sub
 		{
-		_log("query_async: no state returned") ;
-		$cb->(undef, 0, 0) ;
-		return ;
-		}
+		my ($state) = @_ ;
 
-	$self->{_mc} = $state->{matchCount} // $state->{match_count} // 0 ;
-	$self->{_tc} = $state->{totalCount} // $state->{total_count} // 0 ;
+		unless ($state)
+			{
+			_log("query_async: no state (attempt $attempt)") ;
+			$cb->(undef, 0, 0) ;
+			return ;
+			}
 
-	my $raw     = $state->{matches} // [] ;
-	my @matches = map { { index => ($_->{index} // 0) } } @$raw ;
+		my $mc = $state->{matchCount} // $state->{match_count} // 0 ;
+		my $tc = $state->{totalCount} // $state->{total_count} // 0 ;
 
-	_log("query_async: mc=$self->{_mc} tc=$self->{_tc} returned=" . scalar(@matches)) ;
-	$cb->(\@matches, $self->{_mc}, $self->{_tc}) ;
-	}) ;
+		# Check if fzf has applied our query using the response's query field.
+		my $resp_query = $state->{query} // '' ;
+		if ($resp_query ne $query && $attempt < $max)
+			{
+			_log("query_async: fzf query='$resp_query' want='$query', retry $attempt/$max") ;
+			Glib::Timeout->add(50, sub { $try->() ; return 0 }) ;
+			return ;
+			}
+
+		$self->{_mc} = $mc ;
+		$self->{_tc} = $tc ;
+
+		my $raw     = $state->{matches} // [] ;
+		my @matches = map { { index => ($_->{index} // 0), text => ($_->{text} // '') } } @$raw ;
+
+		_log("query_async: mc=$mc tc=$tc returned=" . scalar(@matches) . " (attempt $attempt)") ;
+		$cb->(\@matches, $mc, $tc) ;
+		}) ;
+	} ;
+
+$try->() ;
 }
 
 # ------------------------------------------------------------------------------
@@ -104,7 +128,7 @@ $self->{process}->get_state_async($limit, sub
 	$self->{_tc} = $state->{totalCount} // $state->{total_count} // 0 ;
 
 	my $raw  = $state->{matches} // [] ;
-	my @matches = map { { index => ($_->{index} // 0) } } @$raw ;
+	my @matches = map { { index => ($_->{index} // 0), text => ($_->{text} // '') } } @$raw ;
 
 	_log("fetch_async: mc=$self->{_mc} tc=$self->{_tc} returned=" . scalar(@matches)) ;
 	$cb->(\@matches, $self->{_mc}, $self->{_tc}) ;

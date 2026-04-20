@@ -946,28 +946,6 @@ $self->_dbg("send_query: q='$query'") ;
 $self->{on_query_change}->($self, $query) if $self->{on_query_change} ;
 
 $self->{_fetch_in_flight} = 0 ;
-# If source was a coderef, drain it now into _all_items in idle batches.
-# ItemWriter already consumed the coderef in its forked child; we need a
-# separate drain here for text lookup.  Use the same coderef — but it may
-# already be exhausted.  Store items received from fzf matches as fallback
-# (text comes back in the fzf HTTP response and is stored in _match_indices
-# via _all_items lookups — so we must pre-populate via the source).
-#
-# For coderefs, drain into _all_items via Glib::Idle so the widget is
-# responsive immediately.  The first query result may show empty text for
-# items not yet drained; they fill in on the next render.
-if (ref $self->{_items_src} eq 'CODE' && !@{$self->{_all_items}})
-	{
-	Glib::Idle->add(sub
-		{
-		$self->_dbg("idle: draining coderef into _all_items") ;
-		$self->{_all_items} = _drain_iterator($self->{_items_src}) ;
-		# Rebuild store now that text is available
-		$self->_rebuild_store() if @{$self->{_match_indices}} ;
-		return 0 ;
-		}) ;
-	}
-
 $self->_query_backend($query) ;
 }
 
@@ -1322,6 +1300,13 @@ $self->{last_query}     = $query ;
 $self->{_match_count}   = $mc ;
 $self->{_total_count}   = $tc ;
 $self->{_match_indices} = [ map { $_->{index} } @$matches ] ;
+	# Cache text from fzf response into _all_items for immediate display.
+	for my $m (@$matches)
+		{
+		my $idx = $m->{index} ;
+		$self->{_all_items}[$idx] //= $m->{text}
+			if defined $idx && defined $m->{text} && length($m->{text}) ;
+		}
 $self->{local_pos}      = 0 ;
 
 my $fetched = scalar @{$self->{_match_indices}} ;
@@ -2222,20 +2207,16 @@ if ($query ne '')
 	$self->{entry}->set_text($query) ;
 	}
 
-# If source was a coderef, drain it now into _all_items in idle batches.
-# ItemWriter already consumed the coderef in its forked child; we need a
-# separate drain here for text lookup.  Use the same coderef — but it may
-# already be exhausted.  Store items received from fzf matches as fallback
-# (text comes back in the fzf HTTP response and is stored in _match_indices
-# via _all_items lookups — so we must pre-populate via the source).
-#
-# For coderefs: re-run a fresh iterator from the config if available,
-# otherwise _all_items stays empty and text shows as ''.
-# Simplest correct approach: drain synchronously here (widget is now shown).
+# For coderefs: drain _all_items via Glib::Idle so the widget responds
+# immediately.  The idle fires after the first query result is displayed.
 if (ref $self->{_items_src} eq 'CODE' && !@{$self->{_all_items}})
 	{
-	$self->_dbg("on_process_ready: draining coderef into _all_items") ;
-	$self->{_all_items} = _drain_iterator($self->{_items_src}) ;
+	Glib::Idle->add(sub
+		{
+		$self->{_all_items} = _drain_iterator($self->{_items_src}) ;
+		$self->_rebuild_store() if @{$self->{_match_indices}} ;
+		return 0 ;
+		}) ;
 	}
 
 $self->_query_backend($query) ;
