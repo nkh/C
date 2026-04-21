@@ -1495,6 +1495,7 @@ my ($self) = @_ ;
 $self->_stop_load_timer() ;
 
 my $total_items = scalar @{$self->{_all_items}} ;
+my $_prev_tc    = 0 ;
 
 # If the backend already reports all items indexed (e.g. MockBackend or
 # fzf responded quickly), no timer is needed.
@@ -1510,13 +1511,22 @@ $self->{_load_timer} = Glib::Timeout->add(
 		return 1 if $self->{frozen} ;
 
 		# Stop once the backend confirms all items are indexed.
-		# _total_count is updated by every query/fetch response.
-		if ($self->{_total_count} >= $total_items)
+		# For arrayref sources: stop when tc >= total_items.
+		# For coderef sources (_all_items empty): stop when tc stops growing.
+		if ($total_items > 0 && $self->{_total_count} >= $total_items)
 			{
 			$self->_dbg("load_timer: all $total_items items indexed — stopping") ;
 			$self->{_load_timer} = undef ;
 			return 0 ;
 			}
+
+		if ($total_items == 0 && $self->{_total_count} > 0 && $self->{_total_count} == $_prev_tc)
+			{
+			$self->_dbg("load_timer: tc stable at $self->{_total_count} — stopping") ;
+			$self->{_load_timer} = undef ;
+			return 0 ;
+			}
+		$_prev_tc = $self->{_total_count} ;
 
 		# Don't fetch if _send_query just fired — that request takes priority.
 		return 1 if $self->{_fetch_in_flight} ;
@@ -2231,18 +2241,8 @@ if ($query ne '')
 	$self->{entry}->set_text($query) ;
 	}
 
-# For coderefs: drain _all_items via Glib::Idle so the widget responds
-# immediately.  The idle fires after the first query result is displayed.
-if (ref $self->{_items_src} eq 'CODE' && !@{$self->{_all_items}})
-	{
-	Glib::Idle->add(sub
-		{
-		$self->{_all_items} = _drain_iterator($self->{_items_src}) ;
-		$self->_rebuild_store() if @{$self->{_match_indices}} ;
-		return 0 ;
-		}) ;
-	}
-
+# Item text arrives from fzf HTTP responses and is cached into _all_items
+# as matches come in. No pre-drain needed.
 $self->_query_backend($query) ;
 
 if (@{$self->{initial_selection}})
