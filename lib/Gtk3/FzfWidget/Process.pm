@@ -493,6 +493,14 @@ return $self->{client}->get_more_matches($offset) ;
 
 # ------------------------------------------------------------------------------
 
+sub cancel
+{
+my ($self) = @_ ;
+$self->{poller}->cancel() if $self->{poller} ;
+}
+
+# ------------------------------------------------------------------------------
+
 sub post_sync
 {
 my ($self, $action) = @_ ;

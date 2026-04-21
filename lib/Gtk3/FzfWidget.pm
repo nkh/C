@@ -44,6 +44,19 @@ print STDERR $line ;
 print $_log_fh $line if $_log_fh ;
 }
 
+# _log always writes when FZFW_LOG is set, even without FZFW_DEBUG.
+# Use for key events that need tracing in production.
+sub _log
+{
+my ($self, $msg) = @_ ;
+return unless $_DEBUG || $_log_fh ;
+require Time::HiRes ;
+my ($sec, $usec) = Time::HiRes::gettimeofday() ;
+my $line = sprintf "[%.3f] WIDGET: %s\n", $sec + $usec / 1e6, $msg ;
+print STDERR $line if $_DEBUG ;
+print $_log_fh $line if $_log_fh ;
+}
+
 my $widget_seq = 0 ;
 
 my @DEFAULT_DEBOUNCE_TABLE =
@@ -942,10 +955,14 @@ return unless $self->{_backend} ;
 
 my $query = $self->{entry}->get_text() ;
 
-$self->_dbg("send_query: q='$query'") ;
+$self->_dbg("QUERY_CHANGE q='$query' backend=" . ref($self->{_backend})) ;
 $self->{on_query_change}->($self, $query) if $self->{on_query_change} ;
 
 $self->{_fetch_in_flight} = 0 ;
+
+# Cancel any in-flight StatePoller request so the query GET is not skipped.
+$self->{_backend}->cancel() if $self->{_backend}->can('cancel') ;
+
 $self->_query_backend($query) ;
 }
 
@@ -1313,9 +1330,10 @@ my $fetched = scalar @{$self->{_match_indices}} ;
 $self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
 $self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 
-$self->_dbg("apply_query_result: fetched=$fetched mc=$mc prefetch_at=$self->{_prefetch_at}") ;
+$self->_dbg("apply_query_result: fetched=$fetched mc=$mc prefetch_at=$self->{_prefetch_at} match_indices=[" . join(',', @{$self->{_match_indices}}[0..($fetched>5?4:$fetched-1)]) . ($fetched>5?'...' : '') . "]") ;
 
-if ($self->{_load_timer} && $tc >= scalar @{$self->{_all_items}})
+my $item_count = scalar @{$self->{_all_items}} ;
+if ($self->{_load_timer} && $item_count > 0 && $tc >= $item_count)
 	{
 	$self->_dbg("apply_query_result: all items indexed — stopping load timer") ;
 	$self->_stop_load_timer() ;
@@ -1419,6 +1437,9 @@ my $store  = $self->{list_store} ;
 my $c      = $self->{colors} ;
 my $stripe = $self->{row_striping} ;
 
+my $n = scalar @{$self->{_match_indices}} ;
+$self->_dbg("rebuild_store: n=$n query='$query' store_rows_before=" . $store->iter_n_children(undef)) ;
+
 $store->clear() ;
 $self->{_row_iters} = [] ;   # row -> Gtk3::TreeIter, O(1) lookup
 
@@ -1496,6 +1517,9 @@ $self->{_load_timer} = Glib::Timeout->add(
 			$self->{_load_timer} = undef ;
 			return 0 ;
 			}
+
+		# Don't fetch if _send_query just fired — that request takes priority.
+		return 1 if $self->{_fetch_in_flight} ;
 
 		# Fire a lightweight fetch to update _total_count and _match_count.
 		$self->{_backend}->fetch_async($self->{prefetch_buffer} * 2, sub

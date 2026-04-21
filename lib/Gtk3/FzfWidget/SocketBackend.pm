@@ -77,7 +77,8 @@ $self->{process}->get_state_async($limit, sub
 	my $raw     = $state->{matches} // [] ;
 	my @matches = map { { index => (\$_->{index} // 0), text => (\$_->{text} // '') } } @$raw ;
 
-	_log("query_async: mc=$self->{_mc} tc=$self->{_tc} returned=" . scalar(@matches)) ;
+	_log("query_async RESULT: mc=$self->{_mc} tc=$self->{_tc} returned=" . scalar(@matches)
+		. " indices=[" . join(",", map { \$_->{index} } @matches[0..(\$#matches>4?4:\$#matches)]) . "]") ;
 	$cb->(\@matches, $self->{_mc}, $self->{_tc}) ;
 	}) ;
 }
@@ -110,6 +111,15 @@ $self->{process}->get_state_async($limit, sub
 	_log("fetch_async: mc=$self->{_mc} tc=$self->{_tc} returned=" . scalar(@matches)) ;
 	$cb->(\@matches, $self->{_mc}, $self->{_tc}) ;
 	}) ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub cancel
+{
+my ($self) = @_ ;
+_log("cancel: cancelling in-flight poller request") ;
+$self->{process}->cancel() if $self->{process} ;
 }
 
 # ------------------------------------------------------------------------------
