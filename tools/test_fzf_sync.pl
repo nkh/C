@@ -69,7 +69,7 @@ GetOptions(
 open(my $LOG, '>', $opt_log) or die "Cannot open $opt_log: $!" ;
 $LOG->autoflush(1) ;
 
-sub log_line { printf $LOG "[%.3f] %s\n", gettimeofday(), $_[0] }
+sub log_line { my ($s,$u) = gettimeofday() ; printf $LOG "[%.3f] %s\n", $s+$u/1e6, $_[0] }
 
 # ── Pick a free port ──────────────────────────────────────────────────────────
 
@@ -161,14 +161,22 @@ my $sock = IO::Socket::INET->new(PeerHost=>'127.0.0.1', PeerPort=>$opt_port,
 return undef unless $sock ;
 $sock->autoflush(1) ;
 printf $sock "GET /?limit=%d HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", $limit ;
-my ($body, $in) = ('', 0) ;
+my ($body, $status, $in) = ('', '', 0) ;
 while (defined(my $l = $sock->getline()))
-	{ if (!$in) { $in=1 if $l eq "\r\n" ; next } $body.=$l }
+	{
+	if (!$in)
+		{
+		$status = $l if $status eq '' ;
+		$in = 1 if $l eq "\r\n" ;
+		next ;
+		}
+	$body .= $l ;
+	}
 $sock->close() ;
 my $mc = ($body =~ /"matchCount"\s*:\s*(\d+)/) ? $1 : undef ;
 my $tc = ($body =~ /"totalCount"\s*:\s*(\d+)/) ? $1 : undef ;
 my @idx = ($body =~ /"index"\s*:\s*(\d+)/g) ;
-return { mc=>$mc//0, tc=>$tc//0, n=>scalar @idx } ;
+return { mc=>$mc//0, tc=>$tc//0, n=>scalar @idx, raw=>substr($body,0,200) } ;
 }
 
 sub send_query
@@ -176,14 +184,17 @@ sub send_query
 my ($q) = @_ ;
 my $sock = IO::Socket::INET->new(PeerHost=>'127.0.0.1', PeerPort=>$opt_port,
                                   Proto=>'tcp', Timeout=>5) ;
-return unless $sock ;
+return "CONNECT_FAIL" unless $sock ;
 $sock->autoflush(1) ;
 my $body = "change-query($q)" ;
 my $len  = length($body) ;
 printf $sock "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 	$len, $body ;
+my $status = $sock->getline() // '' ;
 eval { local $/ ; <$sock> } ;
 $sock->close() ;
+chomp $status ;
+return $status ;
 }
 
 # ── Test 1: indexing progress ─────────────────────────────────────────────────
@@ -227,7 +238,8 @@ for my $delay (0, 5, 10, 20, 50, 100, 200, 500, 1000, 2000)
 	send_query('') ; Time::HiRes::sleep(0.3) ;
 
 	my $t0 = gettimeofday() ;
-	send_query($opt_query) ;
+	my \$post_status = send_query($opt_query) ;
+	log_line("  POST status: \$post_status") ;
 	Time::HiRes::sleep($delay/1000) if $delay ;
 	my $s = get_state($opt_limit, $opt_timeout) ;
 	my $ms = int((gettimeofday()-$t0)*1000) ;
@@ -238,8 +250,8 @@ for my $delay (0, 5, 10, 20, 50, 100, 200, 500, 1000, 2000)
 	           :                        sprintf "filtered OK  mc=%d  (%.1f%% of %d)",
 	                                      $s->{mc}, 100*$s->{mc}/$opt_items, $opt_items ;
 
-	log_line(sprintf "  delay=%-5dms  mc=%-7d  tc=%-7d  total=%4dms  %s",
-		$delay, $s?$s->{mc}:0, $s?$s->{tc}:0, $ms, $result) ;
+	log_line(sprintf "  delay=%-5dms  mc=%-7d  tc=%-7d  total=%4dms  %s  raw=[%s]",
+		$delay, $s?$s->{mc}:0, $s?$s->{tc}:0, $ms, $result, $s?substr($s->{raw}//'',0,80):'') ;
 	}
 
 # ── Test 3: latency until mc stabilises ──────────────────────────────────────
