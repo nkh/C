@@ -238,8 +238,8 @@ for my $delay (0, 5, 10, 20, 50, 100, 200, 500, 1000, 2000)
 	send_query('') ; Time::HiRes::sleep(0.3) ;
 
 	my $t0 = gettimeofday() ;
-	my \$post_status = send_query($opt_query) ;
-	log_line("  POST status: \$post_status") ;
+	my $post_status = send_query($opt_query) ;
+	log_line("  POST status: $post_status") ;
 	Time::HiRes::sleep($delay/1000) if $delay ;
 	my $s = get_state($opt_limit, $opt_timeout) ;
 	my $ms = int((gettimeofday()-$t0)*1000) ;
