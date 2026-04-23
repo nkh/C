@@ -106,8 +106,8 @@ if ($fzf_pid == 0)
 	close $null ;
 	close $slave ;
 
-	exec('fzf', "--listen=$opt_port", '--no-sort') ;
-	_exit(1) ;
+	{ no warnings 'exec' ; exec('fzf', "--listen=$opt_port", '--no-sort') }
+	die "exec fzf failed: $!" ;
 	}
 
 close $stdin_r ;
@@ -283,7 +283,7 @@ for my $p (1..200)
 my $latency = defined $first_ms ? "${first_ms}ms" : ">${opt_timeout}ms (TIMEOUT)" ;
 log_line("") ;
 log_line("fzf search latency for '$opt_query' with $opt_items items: $latency") ;
-log_line("StatePoller timeout_ms should be > " . ($first_ms//?0*4:$opt_timeout))
+log_line("StatePoller timeout_ms should be > " . (defined $first_ms ? $first_ms * 4 : $opt_timeout))
 	if defined $first_ms ;
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
