@@ -93,6 +93,9 @@ log_line("START items=$opt_items query='$opt_query' timeout=${opt_timeout}ms por
 print "Running. Output -> $opt_log\n" ;
 print "Watch with: tail -f $opt_log\n" ;
 
+# Items are generated as "NNNNNN_XXXXXXXXXXXXXXXX" (no fixed prefix).
+# This ensures common queries like 'ent' do not match everything.
+
 # ── Launch fzf using a PTY (fzf requires a terminal for output) ───────────────
 
 pipe(my $stdin_r, my $stdin_w) or die "pipe: $!" ;
@@ -159,8 +162,11 @@ if ($writer_pid == 0)
 	{
 	for my $i (1 .. $opt_items)
 		{
-		printf $stdin_w "entry_%06d_%s\n", $i,
-			join('', map { ('a'..'z')[int(rand(26))] } 1..8) ;
+		# Format: 6-digit index + 16 random lowercase letters.
+		# No fixed prefix — a query like 'ent' matches only items where
+		# e, n, t appear in order in the random part (~few percent).
+		printf $stdin_w "%06d_%s\n", $i,
+			join('', map { ('a'..'z')[int(rand(26))] } 1..16) ;
 		}
 	close $stdin_w ;
 	_exit(0) ;
@@ -266,6 +272,27 @@ Time::HiRes::sleep(0.3) ;
 my $base_s = get_state(1, 5000) ;
 my $base   = $base_s ? $base_s->{mc} : 0 ;
 log_line("Baseline (empty query) mc = $base") ;
+
+# Sanity check: verify the query actually filters something
+send_query($opt_query) ;
+Time::HiRes::sleep(0.3) ;
+my $check_s = get_state(1, 5000) ;
+my $check_mc = $check_s ? $check_s->{mc} : 0 ;
+send_query('') ;
+Time::HiRes::sleep(0.2) ;
+
+if ($check_mc == $base)
+	{
+	log_line("WARNING: query '$opt_query' matches ALL $base items (same as empty query)") ;
+	log_line("WARNING: choose a more selective query — this test cannot measure filtering latency") ;
+	log_line("WARNING: try a query matching ~1% of items, e.g. a rare 3-letter combination") ;
+	print "WARNING: query '$opt_query' matches all items. See $opt_log\n" ;
+	}
+else
+	{
+	my $pct = $base > 0 ? int(100*$check_mc/$base+0.5) : 0 ;
+	log_line("Query '$opt_query' matches $check_mc of $base items ($pct%) — good selectivity") ;
+	}
 log_line(sprintf "%-8s %-8s %-8s %-12s %-12s %s", "delay_ms","mc","tc","total_ms","POST_status","result") ;
 
 for my $delay (0, 5, 10, 20, 50, 100, 200, 500, 1000, 2000)
