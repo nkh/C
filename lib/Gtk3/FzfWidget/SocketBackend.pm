@@ -57,8 +57,6 @@ my ($self, $query, $limit, $cb) = @_ ;
 
 _log("query_async q='$query' limit=$limit") ;
 
-# post_sync blocks until fzf acknowledges the action (HTTP 200).
-# fzf processes HTTP requests sequentially so the next GET sees the new query.
 $self->{process}->post_sync("change-query($query)") ;
 
 $self->{process}->get_state_async($limit, sub

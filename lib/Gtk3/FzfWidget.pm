@@ -1331,6 +1331,7 @@ $self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
 $self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 
 $self->_dbg("apply_query_result: fetched=$fetched mc=$mc prefetch_at=$self->{_prefetch_at} match_indices=[" . join(',', @{$self->{_match_indices}}[0..($fetched>5?4:$fetched-1)]) . ($fetched>5?'...' : '') . "]") ;
+warn "FZFW apply_query_result: q='$query' mc=$mc fetched=$fetched\n" if $ENV{FZFW_TRACE} ;
 
 my $item_count = scalar @{$self->{_all_items}} ;
 if ($self->{_load_timer} && $item_count > 0 && $tc >= $item_count)
@@ -1439,6 +1440,7 @@ my $stripe = $self->{row_striping} ;
 
 my $n = scalar @{$self->{_match_indices}} ;
 $self->_dbg("rebuild_store: n=$n query='$query' store_rows_before=" . $store->iter_n_children(undef)) ;
+warn "FZFW rebuild_store: n=$n query='$query'\n" if $ENV{FZFW_TRACE} ;
 
 $store->clear() ;
 $self->{_row_iters} = [] ;   # row -> Gtk3::TreeIter, O(1) lookup
