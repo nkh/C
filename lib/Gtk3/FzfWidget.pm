@@ -279,6 +279,7 @@ $self->{_total_count}          = 0 ;       # total items known to backend
 $self->{_fetch_in_flight}      = 0 ;       # 1 while fetch_async is pending
 $self->{_prefetch_at}          = 0 ;       # trigger prefetch when local_pos >= this
 $self->{_load_timer}           = undef ;   # fires until all items indexed; then stops
+$self->{_query_refresh_timer}  = undef ;   # fires after query change until mc stabilises
 $self->{layout_obj}            = undef ;
 $self->{entry}                 = undef ;
 $self->{tree_view}             = undef ;
@@ -958,6 +959,10 @@ my $query = $self->{entry}->get_text() ;
 $self->_dbg("QUERY_CHANGE q='$query' backend=" . ref($self->{_backend})) ;
 $self->{on_query_change}->($self, $query) if $self->{on_query_change} ;
 
+# Stop both timers — they share the StatePoller with query_async.
+$self->_stop_load_timer() ;
+$self->_stop_query_refresh_timer() ;
+
 $self->{_fetch_in_flight} = 0 ;
 
 # Cancel any in-flight StatePoller request so the query GET is not skipped.
@@ -1280,10 +1285,12 @@ my ($self, $query) = @_ ;
 return unless $self->{_backend} ;
 return if $self->{frozen} ;
 
-my $limit = scalar(@{$self->{_match_indices}}) || ($self->{prefetch_buffer} * 2) ;
-$limit = $self->{prefetch_buffer} * 2 if $limit < $self->{prefetch_buffer} * 2 ;
+# Always fetch prefetch_buffer*2 rows on a query change — never re-use
+# the previous match count as limit, which would return indices from
+# the old query's population.
+my $limit = $self->{prefetch_buffer} * 2 ;
 
-$self->_dbg("query_backend: q='$query' limit=$limit pos=$self->{local_pos}") ;
+$self->_dbg("query_backend: q='$query' limit=$limit") ;
 
 $self->{_backend}->query_async($query, $limit, sub
 	{
@@ -1345,6 +1352,107 @@ $self->_rebuild_store($query) ;
 
 $self->_update_status_label() ;
 $self->{tree_view}->scroll_to_point(0, 0) if $fetched > 0 ;
+
+# Restart the refresh timer so it keeps fetching updated results as fzf
+# finishes computing.  Stops when matchCount stabilises.
+$self->_start_query_refresh_timer($query) ;
+}
+
+# ------------------------------------------------------------------------------
+# Query refresh timer — fires after a query change to fetch updated results
+# as fzf progressively computes matches for the current query.
+# Stops when matchCount is stable across two consecutive polls.
+
+sub _start_query_refresh_timer
+{
+my ($self, $query) = @_ ;
+
+$self->_stop_query_refresh_timer() ;
+
+my $prev_mc   = $self->{_match_count} ;
+my $stable    = 0 ;
+
+$self->_dbg("start_query_refresh_timer: q='$query' initial_mc=$prev_mc") ;
+
+$self->{_query_refresh_timer} = Glib::Timeout->add(
+	$self->{poll_ms},
+	sub
+		{
+		return 0 unless $self->{_backend} ;
+		return 1 if $self->{frozen} ;
+
+		# Stop if query changed while we were running
+		return 0 if ($self->{last_query} // '') ne $query ;
+
+		# Don't fetch while prefetch is in flight
+		return 1 if $self->{_fetch_in_flight} ;
+
+		my $want = scalar(@{$self->{_match_indices}}) ;
+		$want    = $self->{prefetch_buffer} * 2 if $want < $self->{prefetch_buffer} * 2 ;
+
+		$self->{_backend}->fetch_async($want, sub
+			{
+			my ($matches, $mc, $tc) = @_ ;
+			return unless defined $mc ;
+
+			# Stop if query changed
+			return if ($self->{last_query} // '') ne $query ;
+
+			$self->{_total_count} = $tc ;
+
+			if ($mc != $prev_mc)
+				{
+				$self->_dbg("query_refresh: mc changed $prev_mc -> $mc, rebuilding store") ;
+				$stable   = 0 ;
+				$prev_mc  = $mc ;
+
+				$self->{_match_count}   = $mc ;
+				$self->{_match_indices} = [ map { $_->{index} } @{$matches // []} ] ;
+
+				# Cache text from responses
+				for my $m (@{$matches // []})
+					{
+					my $idx = $m->{index} ;
+					$self->{_all_items}[$idx] //= $m->{text}
+						if defined $idx && defined $m->{text} && length($m->{text}) ;
+					}
+
+				my $fetched = scalar @{$self->{_match_indices}} ;
+				$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
+				$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
+
+				$self->_rebuild_store($query) ;
+				$self->_update_status_label() ;
+				}
+			else
+				{
+				$stable++ ;
+				$self->_dbg("query_refresh: mc stable at $mc (stable=$stable)") ;
+				}
+			}) ;
+
+		# Stop after 3 stable polls
+		if ($stable >= 3)
+			{
+			$self->_dbg("query_refresh: mc stable — stopping timer") ;
+			$self->{_query_refresh_timer} = undef ;
+			return 0 ;
+			}
+
+		return 1 ;
+		},
+	) ;
+}
+
+sub _stop_query_refresh_timer
+{
+my ($self) = @_ ;
+
+if ($self->{_query_refresh_timer})
+	{
+	Glib::Source->remove($self->{_query_refresh_timer}) ;
+	$self->{_query_refresh_timer} = undef ;
+	}
 }
 
 # ------------------------------------------------------------------------------
@@ -2097,6 +2205,7 @@ sub _cleanup
 my ($self) = @_ ;
 
 $self->_stop_load_timer() ;
+$self->_stop_query_refresh_timer() ;
 
 if ($self->{debounce_timer})
 	{
@@ -2127,7 +2236,7 @@ sub set_items
 my ($self, $items, $query) = @_ ;
 
 $self->_stop_load_timer() ;
-$self->{_backend}->stop() if $self->{_backend} ;
+$self->_stop_query_refresh_timer() ;
 $self->{_backend}         = undef ;
 $self->{_match_indices}   = [] ;
 $self->{_match_count}     = 0 ;
