@@ -1380,36 +1380,38 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 		{
 		return 0 unless $self->{_backend} ;
 		return 1 if $self->{frozen} ;
-
-		# Stop if query changed while we were running
 		return 0 if ($self->{last_query} // '') ne $query ;
-
-		# Don't fetch while prefetch is in flight
 		return 1 if $self->{_fetch_in_flight} ;
 
-		my $want = scalar(@{$self->{_match_indices}}) ;
-		$want    = $self->{prefetch_buffer} * 2 if $want < $self->{prefetch_buffer} * 2 ;
+		# Fetch everything we know matches — grow window to full match count
+		my $want = $self->{_match_count} > 0
+			? $self->{_match_count}
+			: $self->{prefetch_buffer} * 2 ;
+
+		# Cap at a reasonable single-request size to avoid blocking too long
+		my $cap = 5000 ;
+		my $already = scalar @{$self->{_match_indices}} ;
+		if ($want > $already + $cap) { $want = $already + $cap }
 
 		$self->{_backend}->fetch_async($want, sub
 			{
 			my ($matches, $mc, $tc) = @_ ;
 			return unless defined $mc ;
-
-			# Stop if query changed
 			return if ($self->{last_query} // '') ne $query ;
 
 			$self->{_total_count} = $tc ;
 
-			if ($mc != $prev_mc)
+			my $new_fetched = scalar @{$matches // []} ;
+
+			if ($mc != $prev_mc || $new_fetched > $already)
 				{
-				$self->_dbg("query_refresh: mc changed $prev_mc -> $mc, rebuilding store") ;
-				$stable   = 0 ;
-				$prev_mc  = $mc ;
+				$self->_dbg("query_refresh: mc=$mc (was $prev_mc) fetched=$new_fetched (was $already) — rebuilding") ;
+				$stable  = 0 ;
+				$prev_mc = $mc ;
 
 				$self->{_match_count}   = $mc ;
 				$self->{_match_indices} = [ map { $_->{index} } @{$matches // []} ] ;
 
-				# Cache text from responses
 				for my $m (@{$matches // []})
 					{
 					my $idx = $m->{index} ;
@@ -1427,14 +1429,13 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 			else
 				{
 				$stable++ ;
-				$self->_dbg("query_refresh: mc stable at $mc (stable=$stable)") ;
+				$self->_dbg("query_refresh: stable $stable/3 mc=$mc fetched=$new_fetched") ;
 				}
 			}) ;
 
-		# Stop after 3 stable polls
 		if ($stable >= 3)
 			{
-			$self->_dbg("query_refresh: mc stable — stopping timer") ;
+			$self->_dbg("query_refresh: stopping — mc stable at $prev_mc") ;
 			$self->{_query_refresh_timer} = undef ;
 			return 0 ;
 			}
