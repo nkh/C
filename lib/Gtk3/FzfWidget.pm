@@ -1369,8 +1369,12 @@ my ($self, $query) = @_ ;
 
 $self->_stop_query_refresh_timer() ;
 
-my $prev_mc   = $self->{_match_count} ;
-my $stable    = 0 ;
+# Empty query: all items match — load timer handles progressive display.
+# No need to poll fzf; scrolling is purely local.
+return if $query eq '' ;
+
+my $prev_mc = $self->{_match_count} ;
+my $stable  = 0 ;
 
 $self->_dbg("start_query_refresh_timer: q='$query' initial_mc=$prev_mc") ;
 
@@ -1383,15 +1387,8 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 		return 0 if ($self->{last_query} // '') ne $query ;
 		return 1 if $self->{_fetch_in_flight} ;
 
-		# Fetch everything we know matches — grow window to full match count
-		my $want = $self->{_match_count} > 0
-			? $self->{_match_count}
-			: $self->{prefetch_buffer} * 2 ;
-
-		# Cap at a reasonable single-request size to avoid blocking too long
-		my $cap = 5000 ;
 		my $already = scalar @{$self->{_match_indices}} ;
-		if ($want > $already + $cap) { $want = $already + $cap }
+		my $want    = $already + $self->{prefetch_buffer} * 2 ;
 
 		$self->{_backend}->fetch_async($want, sub
 			{
@@ -1400,18 +1397,19 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 			return if ($self->{last_query} // '') ne $query ;
 
 			$self->{_total_count} = $tc ;
+			$self->{_match_count} = $mc ;
 
 			my $new_fetched = scalar @{$matches // []} ;
 
-			if ($mc != $prev_mc || $new_fetched > $already)
+			if ($new_fetched > $already)
 				{
-				$self->_dbg("query_refresh: mc=$mc (was $prev_mc) fetched=$new_fetched (was $already) — rebuilding") ;
-				$stable  = 0 ;
-				$prev_mc = $mc ;
+				# Append only new rows — never clear the store
+				$stable = 0 ;
+				$self->_dbg("query_refresh: appending " . ($new_fetched - $already) . " rows (mc=$mc)") ;
 
-				$self->{_match_count}   = $mc ;
-				$self->{_match_indices} = [ map { $_->{index} } @{$matches // []} ] ;
+				my @all_indices = map { $_->{index} } @{$matches // []} ;
 
+				# Cache text
 				for my $m (@{$matches // []})
 					{
 					my $idx = $m->{index} ;
@@ -1419,23 +1417,55 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 						if defined $idx && defined $m->{text} && length($m->{text}) ;
 					}
 
+				# Append new rows to store without clearing
+				my $q      = $self->{entry}->get_text() ;
+				my $store  = $self->{list_store} ;
+				my $c      = $self->{colors} ;
+				my $stripe = $self->{row_striping} ;
+
+				for my $row ($already .. $new_fetched - 1)
+					{
+					my $orig_idx = $all_indices[$row] ;
+					next unless defined $orig_idx ;
+					my $text    = $self->{_all_items}[$orig_idx] // '' ;
+					my $display = $self->{transform_fn}
+						? ($self->{transform_fn}->($text) // $text)
+						: $text ;
+					my $markup  = $self->_make_markup(
+						$display, $self->_get_positions($display, $q),
+						0, undef, $text) ;
+					my $cell_bg = $stripe
+						? $stripe->[$row % scalar @$stripe]
+						: undef ;
+					my $iter = $store->append() ;
+					$store->set($iter, 0, $markup, 1, $orig_idx, 2, 0, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+					$self->{_row_iters}[$row] = $iter ;
+					}
+
+				$self->{_match_indices} = [@all_indices] ;
 				my $fetched = scalar @{$self->{_match_indices}} ;
 				$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
 				$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
-
-				$self->_rebuild_store($query) ;
+				$self->_update_status_label() ;
+				}
+			elsif ($mc != $prev_mc)
+				{
+				# mc changed but no new rows yet — fzf still computing
+				$stable = 0 ;
 				$self->_update_status_label() ;
 				}
 			else
 				{
 				$stable++ ;
-				$self->_dbg("query_refresh: stable $stable/3 mc=$mc fetched=$new_fetched") ;
+				$self->_dbg("query_refresh: stable $stable/3 fetched=$new_fetched mc=$mc") ;
 				}
+
+			$prev_mc = $mc ;
 			}) ;
 
 		if ($stable >= 3)
 			{
-			$self->_dbg("query_refresh: stopping — mc stable at $prev_mc") ;
+			$self->_dbg("query_refresh: stopping — stable at mc=$prev_mc") ;
 			$self->{_query_refresh_timer} = undef ;
 			return 0 ;
 			}
