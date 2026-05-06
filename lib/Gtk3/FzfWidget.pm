@@ -1165,22 +1165,6 @@ if ($delta > 0
 	$self->_prefetch_more() ;
 	}
 
-# If we are at the very last fetched row and a fetch is in flight, pump
-# the event loop briefly so the display doesn't freeze.
-if ($new_pos == $count - 1 && $count < $self->{_match_count} && $self->{_fetch_in_flight})
-	{
-	$self->_dbg("navigate: at last row, fetch in flight — pumping event loop") ;
-	my $deadline = time() + 0.5 ;
-	while ($self->{_fetch_in_flight} && time() < $deadline)
-		{
-		Glib::MainContext->default->iteration(0) ;
-		}
-	# Re-read count after pump — may have grown
-	$count   = scalar @{$self->{_match_indices}} ;
-	my $desired = $old_pos + $delta ;
-	$new_pos = $desired < $count ? $desired : $count - 1 ;
-	}
-
 return if $new_pos == $old_pos ;
 
 $self->{local_pos} = $new_pos ;
@@ -1673,27 +1657,63 @@ $self->{_load_timer} = Glib::Timeout->add(
 		return 1 if $self->{_fetch_in_flight} ;
 
 		# Fire a lightweight fetch to update _total_count and _match_count.
-		$self->{_backend}->fetch_async($self->{prefetch_buffer} * 2, sub
+		# Fetch at least what is already displayed so we can append new rows.
+		my $already = scalar @{$self->{_match_indices}} ;
+		my $want    = $already + $self->{prefetch_buffer} * 2 ;
+		$self->{_backend}->fetch_async($want, sub
 			{
 			my ($m, $mc, $tc) = @_ ;
 			return unless defined $tc ;
 			$self->{_total_count} = $tc ;
 
-			return unless defined $mc && $mc != $self->{_match_count} ;
+			return unless defined $mc ;
+			$self->{_match_count} = $mc ;
+			$self->_update_status_label() ;
+
 			return unless $m && @$m ;
 
-			my @new_indices = map { $_->{index} } @$m ;
+			my @all_indices = map { $_->{index} } @$m ;
+			my $new_fetched = scalar @all_indices ;
 
-			# Don't replace the current window if it would invalidate local_pos.
-			return if scalar(@new_indices) <= $self->{local_pos} ;
+			# Only append new rows — never rebuild the entire store.
+			return unless $new_fetched > $already ;
 
-			$self->{_match_count}   = $mc ;
-			$self->{_match_indices} = \@new_indices ;
-			my $fetched = scalar @new_indices ;
+			# Cache text from response
+			for my $mi (@$m)
+				{
+				my $idx = $mi->{index} ;
+				$self->{_all_items}[$idx] //= $mi->{text}
+					if defined $idx && defined $mi->{text} && length($mi->{text}) ;
+				}
+
+			my $q      = $self->{entry}->get_text() ;
+			my $store  = $self->{list_store} ;
+			my $stripe = $self->{row_striping} ;
+
+			for my $row ($already .. $new_fetched - 1)
+				{
+				my $orig_idx = $all_indices[$row] ;
+				next unless defined $orig_idx ;
+				my $text    = $self->{_all_items}[$orig_idx] // '' ;
+				my $display = $self->{transform_fn}
+					? ($self->{transform_fn}->($text) // $text)
+					: $text ;
+				my $markup  = $self->_make_markup(
+					$display, $self->_get_positions($display, $q),
+					0, undef, $text,
+					) ;
+				my $cell_bg = $stripe
+					? $stripe->[$row % scalar @$stripe]
+					: undef ;
+				my $iter = $store->append() ;
+				$store->set($iter, 0, $markup, 1, $orig_idx, 2, 0, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+				$self->{_row_iters}[$row] = $iter ;
+				}
+
+			$self->{_match_indices} = \@all_indices ;
+			my $fetched = scalar @all_indices ;
 			$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
 			$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
-			$self->_rebuild_store() ;
-			$self->_update_status_label() ;
 			}) ;
 
 		return 1 ;
