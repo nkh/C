@@ -1635,9 +1635,61 @@ $self->{_load_timer} = Glib::Timeout->add(
 		return 0 unless $self->{_backend} ;
 		return 1 if $self->{frozen} ;
 
-		# Stop once the backend confirms all items are indexed.
-		# For arrayref sources: stop when tc >= total_items.
-		# For coderef sources (_all_items empty): stop when tc stops growing.
+		my $query = $self->{entry}->get_text() ;
+
+		# For empty query with a known arrayref source: _all_items already holds
+		# all item text.  Populate the store directly without querying fzf.
+		# This is independent of how fast fzf is indexing items.
+		if ($query eq '' && $total_items > 0)
+			{
+			my $already = scalar @{$self->{_match_indices}} ;
+
+			if ($already < $total_items)
+				{
+				my $batch_end = $already + $self->{prefetch_buffer} * 2 ;
+				$batch_end = $total_items if $batch_end > $total_items ;
+
+				my $store  = $self->{list_store} ;
+				my $stripe = $self->{row_striping} ;
+
+				for my $row ($already .. $batch_end - 1)
+					{
+					my $text    = $self->{_all_items}[$row] // '' ;
+					my $display = $self->{transform_fn}
+						? ($self->{transform_fn}->($text) // $text)
+						: $text ;
+					my $markup  = $self->_make_markup($display, [], 0, undef, $text) ;
+					my $cell_bg = $stripe
+						? $stripe->[$row % scalar @$stripe]
+						: undef ;
+					my $iter = $store->append() ;
+					$store->set($iter, 0, $markup, 1, $row, 2, 0,
+						3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+					$self->{_row_iters}[$row] = $iter ;
+					push @{$self->{_match_indices}}, $row ;
+					}
+
+				my $fetched            = scalar @{$self->{_match_indices}} ;
+				$self->{_match_count}  = $fetched ;
+				$self->{_prefetch_at}  = $fetched - $self->{prefetch_buffer} ;
+				$self->{_prefetch_at}  = 0 if $self->{_prefetch_at} < 0 ;
+				$self->_update_status_label() ;
+				}
+
+			if (scalar @{$self->{_match_indices}} >= $total_items)
+				{
+				$self->_dbg("load_timer: all $total_items items in store — stopping") ;
+				$self->{_match_count} = $total_items ;
+				$self->{_total_count} = $total_items ;
+				$self->_update_status_label() ;
+				$self->{_load_timer}  = undef ;
+				return 0 ;
+				}
+
+			return 1 ;
+			}
+
+		# Non-empty query, or coderef source: track indexing via fzf total_count.
 		if ($total_items > 0 && $self->{_total_count} >= $total_items)
 			{
 			$self->_dbg("load_timer: all $total_items items indexed — stopping") ;
@@ -1653,67 +1705,16 @@ $self->{_load_timer} = Glib::Timeout->add(
 			}
 		$_prev_tc = $self->{_total_count} ;
 
-		# Don't fetch if _send_query just fired — that request takes priority.
 		return 1 if $self->{_fetch_in_flight} ;
 
-		# Fire a lightweight fetch to update _total_count and _match_count.
-		# Fetch at least what is already displayed so we can append new rows.
-		my $already = scalar @{$self->{_match_indices}} ;
-		my $want    = $already + $self->{prefetch_buffer} * 2 ;
-		$self->{_backend}->fetch_async($want, sub
+		# Poll fzf with limit=1 just to update _total_count for the status bar.
+		$self->{_backend}->fetch_async(1, sub
 			{
 			my ($m, $mc, $tc) = @_ ;
 			return unless defined $tc ;
 			$self->{_total_count} = $tc ;
-
-			return unless defined $mc ;
-			$self->{_match_count} = $mc ;
+			$self->{_match_count} = $mc if defined $mc ;
 			$self->_update_status_label() ;
-
-			return unless $m && @$m ;
-
-			my @all_indices = map { $_->{index} } @$m ;
-			my $new_fetched = scalar @all_indices ;
-
-			# Only append new rows — never rebuild the entire store.
-			return unless $new_fetched > $already ;
-
-			# Cache text from response
-			for my $mi (@$m)
-				{
-				my $idx = $mi->{index} ;
-				$self->{_all_items}[$idx] //= $mi->{text}
-					if defined $idx && defined $mi->{text} && length($mi->{text}) ;
-				}
-
-			my $q      = $self->{entry}->get_text() ;
-			my $store  = $self->{list_store} ;
-			my $stripe = $self->{row_striping} ;
-
-			for my $row ($already .. $new_fetched - 1)
-				{
-				my $orig_idx = $all_indices[$row] ;
-				next unless defined $orig_idx ;
-				my $text    = $self->{_all_items}[$orig_idx] // '' ;
-				my $display = $self->{transform_fn}
-					? ($self->{transform_fn}->($text) // $text)
-					: $text ;
-				my $markup  = $self->_make_markup(
-					$display, $self->_get_positions($display, $q),
-					0, undef, $text,
-					) ;
-				my $cell_bg = $stripe
-					? $stripe->[$row % scalar @$stripe]
-					: undef ;
-				my $iter = $store->append() ;
-				$store->set($iter, 0, $markup, 1, $orig_idx, 2, 0, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
-				$self->{_row_iters}[$row] = $iter ;
-				}
-
-			$self->{_match_indices} = \@all_indices ;
-			my $fetched = scalar @all_indices ;
-			$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
-			$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 			}) ;
 
 		return 1 ;
