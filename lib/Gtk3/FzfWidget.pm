@@ -1501,6 +1501,18 @@ $self->{_backend}->fetch_async($want, sub
 	my $old_count = scalar @{$self->{_match_indices}} ;
 	$self->{_match_count} = $mc ;
 	$self->{_total_count} = $tc ;
+
+	# Cache text from fzf response before building _match_indices.
+	# _all_items is empty for coderef sources; fzf responses are the
+	# only source of item text.  Without this, rows appended below
+	# would have empty text and display as blank lines.
+	for my $m (@$matches)
+		{
+		my $idx = $m->{index} ;
+		$self->{_all_items}[$idx] //= $m->{text}
+			if defined $idx && defined $m->{text} && length($m->{text}) ;
+		}
+
 	$self->{_match_indices} = [ map { $_->{index} } @$matches ] ;
 
 	my $new_count = scalar @{$self->{_match_indices}} ;
