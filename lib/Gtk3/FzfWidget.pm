@@ -1252,7 +1252,7 @@ for my $row ($old_pos, $new_pos)
 		? ($c->{cursor_bg} // '#2d6db5')
 		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
-	$store->set($iter, 0, $markup, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+	$store->set($iter, 0, $markup, 3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
 	$store->set($iter, 2, ($self->{local_selected}{$orig_idx} ? 1 : 0))
 		if $self->{multi} ;
 	}
@@ -1422,7 +1422,7 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 						? $stripe->[$row % scalar @$stripe]
 						: undef ;
 					my $iter = $store->append() ;
-					$store->set($iter, 0, $markup, 1, $orig_idx, 2, 0, 3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+					$store->set($iter, 0, $markup, 1, $orig_idx, 2, 0, 3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
 					$self->{_row_iters}[$row] = $iter ;
 					}
 
@@ -1571,7 +1571,7 @@ $self->{_backend}->fetch_async($want, sub
 				0, $markup,
 				1, $orig_idx,
 				2, ($self->{local_selected}{$orig_idx} ? 1 : 0),
-				3, $cell_bg // '',
+				3, $cell_bg // '#000000',
 				4, $cell_bg ? 1 : 0,
 				) ;
 			$self->{_row_iters}[$row] = $iter ;
@@ -1625,7 +1625,7 @@ for my $row (0 .. $#{$self->{_match_indices}})
 		0, $markup,
 		1, $orig_idx,
 		2, ($self->{local_selected}{$orig_idx} ? 1 : 0),
-		3, $cell_bg // '',
+		3, $cell_bg // '#000000',
 		4, $cell_bg ? 1 : 0,
 		) ;
 	$self->{_row_iters}[$row] = $iter ;
@@ -1697,7 +1697,7 @@ $self->{_load_timer} = Glib::Timeout->add(
 						: undef ;
 					my $iter = $store->append() ;
 					$store->set($iter, 0, $markup, 1, $row, 2, 0,
-						3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+						3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
 					$self->{_row_iters}[$row] = $iter ;
 					push @{$self->{_match_indices}}, $row ;
 					}
@@ -1785,7 +1785,7 @@ $self->{_load_timer} = Glib::Timeout->add(
 					: undef ;
 				my $iter = $store->append() ;
 				$store->set($iter, 0, $markup, 1, $orig_idx, 2, 0,
-					3, $cell_bg // '', 4, $cell_bg ? 1 : 0) ;
+					3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
 				$self->{_row_iters}[$row] = $iter ;
 				}
 
