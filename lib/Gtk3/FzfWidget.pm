@@ -1432,6 +1432,27 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 				$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 				$self->_update_status_label() ;
 				}
+			elsif ($new_fetched < $already)
+				{
+				# Fewer matches than store rows — query results changed.
+				# Rebuild the store to show only current matches.
+				$stable = 0 ;
+				$self->_dbg("query_refresh: mc=$mc new_fetched=$new_fetched < already=$already — rebuilding") ;
+
+				for my $m (@{$matches // []})
+					{
+					my $idx = $m->{index} ;
+					$self->{_all_items}[$idx] //= $m->{text}
+						if defined $idx && defined $m->{text} && length($m->{text}) ;
+					}
+
+				$self->{_match_indices} = [ map { $_->{index} } @{$matches // []} ] ;
+				my $fetched = scalar @{$self->{_match_indices}} ;
+				$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
+				$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
+				$self->_rebuild_store($query) ;
+				$self->_update_status_label() ;
+				}
 			elsif ($mc != $prev_mc)
 				{
 				# mc changed but no new rows yet — fzf still computing
@@ -1713,9 +1734,17 @@ $self->{_load_timer} = Glib::Timeout->add(
 
 		return 1 if $self->{_fetch_in_flight} ;
 
-		# Fetch current window + one batch ahead so the store grows with fzf.
+		# Update match count from store on every tick so the counter
+		# increments as items are appended, not only when fzf responds.
 		my $already = scalar @{$self->{_match_indices}} ;
-		my $want    = $already + $self->{prefetch_buffer} * 2 ;
+		if ($already > ($self->{_match_count} // 0))
+			{
+			$self->{_match_count} = $already ;
+			$self->_update_status_label() ;
+			}
+
+		# Fetch current window + one batch ahead so the store grows with fzf.
+		my $want = $already + $self->{prefetch_buffer} * 2 ;
 
 		$self->{_backend}->fetch_async($want, sub
 			{
