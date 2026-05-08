@@ -968,6 +968,14 @@ $self->{_fetch_in_flight} = 0 ;
 # Cancel any in-flight StatePoller request so the query GET is not skipped.
 $self->{_backend}->cancel() if $self->{_backend}->can('cancel') ;
 
+# Clear the store immediately — never show stale results from the
+# previous query while waiting for fzf's HTTP response.
+$self->{_match_indices} = [] ;
+$self->{_row_iters}     = [] ;
+$self->{local_pos}      = 0 ;
+$self->{list_store}->clear() ;
+$self->_update_status_label() ;
+
 $self->_query_backend($query) ;
 }
 
@@ -1358,6 +1366,7 @@ $self->_stop_query_refresh_timer() ;
 return if $query eq '' ;
 
 my $prev_mc = $self->{_match_count} ;
+my $prev_tc = $self->{_total_count} ;
 my $stable  = 0 ;
 
 $self->_dbg("start_query_refresh_timer: q='$query' initial_mc=$prev_mc") ;
@@ -1461,11 +1470,21 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 				}
 			else
 				{
-				$stable++ ;
-				$self->_dbg("query_refresh: stable $stable/3 fetched=$new_fetched mc=$mc") ;
+				# Both mc and tc must be stable before we stop — tc still
+				# growing means fzf is still indexing and mc may change.
+				if ($mc == $prev_mc && $tc == $prev_tc)
+					{
+					$stable++ ;
+					$self->_dbg("query_refresh: stable $stable/3 fetched=$new_fetched mc=$mc tc=$tc") ;
+					}
+				else
+					{
+					$stable = 0 ;
+					}
 				}
 
 			$prev_mc = $mc ;
+			$prev_tc = $tc ;
 			}) ;
 
 		if ($stable >= 3)
