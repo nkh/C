@@ -1742,15 +1742,7 @@ $self->{_load_timer} = Glib::Timeout->add(
 			}
 
 		# Coderef source (total_items==0): items arrive via fzf only.
-		# Fetch progressively from fzf and append new rows to the store.
-		if ($total_items == 0 && $self->{_total_count} > 0 && $self->{_total_count} == $_prev_tc)
-			{
-			$self->_dbg("load_timer: tc stable at $self->{_total_count} — stopping") ;
-			$self->{_load_timer} = undef ;
-			return 0 ;
-			}
-		$_prev_tc = $self->{_total_count} ;
-
+		# Load the initial window, then stop — _prefetch_more handles the rest.
 		return 1 if $self->{_fetch_in_flight} ;
 
 		# Update match count from store on every tick so the counter
@@ -1762,8 +1754,16 @@ $self->{_load_timer} = Glib::Timeout->add(
 			$self->_update_status_label() ;
 			}
 
-		# Fetch current window + one batch ahead so the store grows with fzf.
-		my $want = $already + $self->{prefetch_buffer} * 2 ;
+		# Fetch one initial batch. Once we have prefetch_buffer*2 rows in
+		# the store the timer stops — _prefetch_more takes over from here.
+		if ($already >= $self->{prefetch_buffer} * 2)
+			{
+			$self->_dbg("load_timer: initial window loaded ($already rows) — stopping") ;
+			$self->{_load_timer} = undef ;
+			return 0 ;
+			}
+
+		my $want = $self->{prefetch_buffer} * 2 ;
 
 		$self->{_backend}->fetch_async($want, sub
 			{
