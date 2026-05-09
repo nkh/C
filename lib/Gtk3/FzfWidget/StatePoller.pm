@@ -198,11 +198,11 @@ sub _request
 {
 my ($self, $path, $cb, $mode) = @_ ;
 
-# If a request is already in flight, skip this one.
-# The bg_poll or the next navigate will retry.
 if (defined $self->{pid})
 	{
 	$self->_dbg_sp("SKIP request path=$path (in-flight pid=$self->{pid})") ;
+	# Notify caller so it can reset any in-flight guard flags.
+	$cb->(undef, undef, undef) if $cb ;
 	return ;
 	}
 

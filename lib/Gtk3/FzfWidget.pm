@@ -1481,6 +1481,10 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 				$self->{_prefetch_at}   = 0 if $self->{_prefetch_at} < 0 ;
 				$self->_rebuild_store($query) ;
 				$self->_update_status_label() ;
+
+				# Restart load timer so _total_count keeps incrementing as
+				# fzf continues indexing items after the query stabilised.
+				$self->_start_load_timer() ;
 				}) ;
 
 			return 0 ;
