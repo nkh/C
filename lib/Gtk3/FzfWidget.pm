@@ -931,19 +931,13 @@ if ($self->{loading})
 	return ;
 	}
 
+# No debounce — cancel any in-flight request and re-query immediately.
+# fzf handles rapid query changes; 300-500ms debounce made the widget
+# feel very slow.
 Glib::Source->remove($self->{debounce_timer}) if $self->{debounce_timer} ;
+$self->{debounce_timer} = undef ;
 
-my $ms = $self->_debounce_ms() ;
-
-$self->{debounce_timer} = Glib::Timeout->add(
-	$ms,
-	sub
-		{
-		$self->{debounce_timer} = undef ;
-		$self->_send_query() ;
-		return 0 ;
-		},
-	) ;
+$self->_send_query() ;
 }
 
 # ------------------------------------------------------------------------------
