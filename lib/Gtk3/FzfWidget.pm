@@ -1373,7 +1373,7 @@ return if $query eq '' ;
 
 my $prev_mc = $self->{_match_count} ;
 my $stable  = 0 ;
-my $batch   = $self->{prefetch_buffer} * 2 ;
+my $batch   = $self->{prefetch_buffer} * 10 ;
 my $pending = 0 ;
 
 $self->_dbg("start_query_refresh_timer: q='$query' initial_mc=$prev_mc") ;
@@ -1383,7 +1383,7 @@ $self->_dbg("start_query_refresh_timer: q='$query' initial_mc=$prev_mc") ;
 $self->{_refresh_active} = 1 ;
 
 $self->{_query_refresh_timer} = Glib::Timeout->add(
-	$self->{poll_ms},
+	$self->{poll_ms} * 2,
 	sub
 		{
 		return 0 unless $self->{_backend} ;
@@ -1652,11 +1652,14 @@ $self->_stop_load_timer() ;
 my $total_items = scalar @{$self->{_all_items}} ;
 my $_prev_tc    = 0 ;
 
-# If the backend already reports all items indexed (e.g. MockBackend or
-# fzf responded quickly), no timer is needed.
-return if $self->{_backend} && $self->{_backend}->total_count() >= $total_items ;
+# For coderef sources total_items=0 (unknown count) — always start the
+# timer.  For arrayref sources skip if fzf has already indexed everything.
+if ($total_items > 0)
+	{
+	return if $self->{_backend} && $self->{_backend}->total_count() >= $total_items ;
+	}
 
-$self->_dbg("start_load_timer: waiting for $total_items items") ;
+$self->_dbg("start_load_timer: total_items=$total_items") ;
 
 $self->{_load_timer} = Glib::Timeout->add(
 	$self->{poll_ms} * 2,
@@ -1750,7 +1753,7 @@ $self->{_load_timer} = Glib::Timeout->add(
 			my ($m, $mc, $tc) = @_ ;
 			return unless defined $tc ;
 			$self->{_total_count} = $tc ;
-			$self->{_match_count} = $mc if defined $mc ;
+			$self->{_match_count} = $tc ;    # empty query: all indexed items match
 			$self->_update_status_label() ;
 
 			return unless $m && @$m ;
