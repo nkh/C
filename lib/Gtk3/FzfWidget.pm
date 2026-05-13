@@ -959,17 +959,61 @@ my $query = $self->{entry}->get_text() ;
 $self->_dbg("QUERY_CHANGE q='$query' backend=" . ref($self->{_backend})) ;
 $self->{on_query_change}->($self, $query) if $self->{on_query_change} ;
 
-# Stop both timers — they share the StatePoller with query_async.
 $self->_stop_load_timer() ;
 $self->_stop_query_refresh_timer() ;
 
 $self->{_fetch_in_flight} = 0 ;
+$self->{_refresh_active}  = 0 ;
 
-# Cancel any in-flight StatePoller request so the query GET is not skipped.
 $self->{_backend}->cancel() if $self->{_backend}->can('cancel') ;
 
-# Clear the store immediately — never show stale results from the
-# previous query while waiting for fzf's HTTP response.
+# When query becomes empty: restore display immediately from cached items
+# without waiting for a fzf HTTP round-trip.
+if ($query eq '')
+	{
+	my $cached = scalar @{$self->{_all_items}} ;
+
+	$self->{_match_indices} = [] ;
+	$self->{_row_iters}     = [] ;
+	$self->{local_pos}      = 0 ;
+	$self->{list_store}->clear() ;
+
+	# Rebuild from whatever items we have cached.  The load timer will
+	# append more as fzf continues indexing.
+	if ($cached > 0)
+		{
+		my $show = $cached < $self->{prefetch_buffer} * 2
+			? $cached
+			: $self->{prefetch_buffer} * 2 ;
+		my $store  = $self->{list_store} ;
+		my $stripe = $self->{row_striping} ;
+
+		for my $row (0 .. $show - 1)
+			{
+			my $text    = $self->{_all_items}[$row] // '' ;
+			my $display = $self->{transform_fn}
+				? ($self->{transform_fn}->($text) // $text)
+				: $text ;
+			my $markup  = $self->_make_markup($display, [], 0, undef, $text) ;
+			my $cell_bg = $stripe ? $stripe->[$row % scalar @$stripe] : undef ;
+			my $iter    = $store->append() ;
+			$store->set($iter, 0, $markup, 1, $row, 2, 0,
+				3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
+			$self->{_row_iters}[$row] = $iter ;
+			push @{$self->{_match_indices}}, $row ;
+			}
+
+		$self->{last_query}   = '' ;
+		$self->{_match_count} = $self->{_total_count} ;
+		$self->{_prefetch_at} = $show - $self->{prefetch_buffer} ;
+		$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
+		$self->_update_status_label() ;
+		$self->_start_load_timer() ;
+		return ;
+		}
+	}
+
+# Non-empty query or no cached items: clear store and ask fzf.
 $self->{_match_indices} = [] ;
 $self->{_row_iters}     = [] ;
 $self->{local_pos}      = 0 ;
@@ -1730,6 +1774,15 @@ $self->{_load_timer} = Glib::Timeout->add(
 		return 1 if $self->{_fetch_in_flight} ;
 
 		my $already = scalar @{$self->{_match_indices}} ;
+
+		# Update match_count from store size every tick so the counter
+		# increments immediately as rows are appended, without waiting
+		# for fzf's HTTP response.
+		if ($already > ($self->{_match_count} // 0))
+			{
+			$self->{_match_count} = $already ;
+			$self->_update_status_label() ;
+			}
 
 		# When a query is active the query_refresh_timer owns the store.
 		# Only poll for _total_count so the status bar keeps updating.
