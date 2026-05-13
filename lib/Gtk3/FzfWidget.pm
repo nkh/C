@@ -1496,6 +1496,8 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 
 				if ($stable >= 3)
 					{
+					$self->{_match_count} = $mc ;
+					$self->_update_status_label() ;
 					$self->_stop_query_refresh_timer() ;
 					$self->{_refresh_active} = 0 ;
 					$self->_start_load_timer() ;
