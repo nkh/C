@@ -1345,6 +1345,14 @@ $self->_rebuild_store($query) ;
 $self->_update_status_label() ;
 $self->{tree_view}->scroll_to_point(0, 0) if $fetched > 0 ;
 
+# For empty query the refresh timer does not run — clear the block flag
+# and restart the load timer so _total_count keeps updating.
+if ($query eq '')
+	{
+	$self->{_refresh_active} = 0 ;
+	$self->_start_load_timer() ;
+	}
+
 # Restart the refresh timer so it keeps fetching updated results as fzf
 # finishes computing.  Stops when matchCount stabilises.
 $self->_start_query_refresh_timer($query) ;
@@ -1366,8 +1374,13 @@ return if $query eq '' ;
 my $prev_mc = $self->{_match_count} ;
 my $stable  = 0 ;
 my $batch   = $self->{prefetch_buffer} * 2 ;
+my $pending = 0 ;
 
 $self->_dbg("start_query_refresh_timer: q='$query' initial_mc=$prev_mc") ;
+
+# Block _prefetch_more while this timer is active — both write to
+# _match_indices and the store; interleaving causes duplicate rows.
+$self->{_refresh_active} = 1 ;
 
 $self->{_query_refresh_timer} = Glib::Timeout->add(
 	$self->{poll_ms},
@@ -1376,14 +1389,16 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 		return 0 unless $self->{_backend} ;
 		return 1 if $self->{frozen} ;
 		return 0 if ($self->{last_query} // '') ne $query ;
-		return 1 if $self->{_fetch_in_flight} ;
+		return 1 if $pending ;
 
-		# Request one batch beyond what we already have.
 		my $already = scalar @{$self->{_match_indices}} ;
 		my $want    = $already + $batch ;
+		$pending    = 1 ;
 
 		$self->{_backend}->fetch_async($want, sub
 			{
+			$pending = 0 ;
+
 			my ($matches, $mc, $tc) = @_ ;
 			return unless defined $mc ;
 			return if ($self->{last_query} // '') ne $query ;
@@ -1396,7 +1411,6 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 
 			if ($new_fetched > $already)
 				{
-				# fzf returned more matches — cache text and append new rows only.
 				$stable = 0 ;
 
 				for my $m (@{$matches // []})
@@ -1439,56 +1453,23 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 				}
 			elsif ($mc == $prev_mc)
 				{
-				# mc unchanged and no new rows — fzf is done for this query.
 				$stable++ ;
-				$self->_dbg("query_refresh: stable=$stable mc=$mc fetched=$new_fetched") ;
+				$self->_dbg("query_refresh: stable=$stable mc=$mc") ;
+
+				if ($stable >= 3)
+					{
+					$self->_stop_query_refresh_timer() ;
+					$self->{_refresh_active} = 0 ;
+					$self->_start_load_timer() ;
+					}
 				}
 			else
 				{
-				# mc changed but fetched count did not grow yet — fzf still
-				# computing.  Reset stable so we keep polling.
 				$stable = 0 ;
 				}
 
 			$prev_mc = $mc ;
 			}) ;
-
-		# Once stable, do one final rebuild so fzf's definitive sort order
-		# is shown, then stop.
-		if ($stable >= 3)
-			{
-			$self->_dbg("query_refresh: stable — final rebuild and stop") ;
-			$self->{_query_refresh_timer} = undef ;
-
-			$self->{_backend}->fetch_async(scalar(@{$self->{_match_indices}}), sub
-				{
-				my ($matches, $mc, $tc) = @_ ;
-				return unless defined $mc ;
-				return if ($self->{last_query} // '') ne $query ;
-
-				for my $m (@{$matches // []})
-					{
-					my $idx = $m->{index} ;
-					$self->{_all_items}[$idx] //= $m->{text}
-						if defined $idx && defined $m->{text} && length($m->{text}) ;
-					}
-
-				$self->{_match_count}   = $mc ;
-				$self->{_total_count}   = $tc ;
-				$self->{_match_indices} = [ map { $_->{index} } @{$matches // []} ] ;
-				my $fetched = scalar @{$self->{_match_indices}} ;
-				$self->{_prefetch_at}   = $fetched - $self->{prefetch_buffer} ;
-				$self->{_prefetch_at}   = 0 if $self->{_prefetch_at} < 0 ;
-				$self->_rebuild_store($query) ;
-				$self->_update_status_label() ;
-
-				# Restart load timer so _total_count keeps incrementing as
-				# fzf continues indexing items after the query stabilised.
-				$self->_start_load_timer() ;
-				}) ;
-
-			return 0 ;
-			}
 
 		return 1 ;
 		},
@@ -1514,6 +1495,7 @@ sub _prefetch_more
 my ($self) = @_ ;
 
 return if $self->{_fetch_in_flight} ;
+return if $self->{_refresh_active} ;
 return unless $self->{_backend} ;
 
 my $current = scalar @{$self->{_match_indices}} ;
