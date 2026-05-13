@@ -1779,7 +1779,8 @@ $self->{_load_timer} = Glib::Timeout->add(
 			}
 
 		# When a query is active the query_refresh_timer owns the store.
-		# Only poll for _total_count so the status bar keeps updating.
+		# Poll _total_count and _match_count so the counter keeps updating
+		# as fzf indexes items in the background.
 		if ($query ne '')
 			{
 			$self->{_backend}->fetch_async(1, sub
@@ -1787,6 +1788,7 @@ $self->{_load_timer} = Glib::Timeout->add(
 				my ($m, $mc, $tc) = @_ ;
 				return unless defined $tc ;
 				$self->{_total_count} = $tc ;
+				$self->{_match_count} = $mc if defined $mc && $mc > ($self->{_match_count} // 0) ;
 				$self->_update_status_label() ;
 				}) ;
 			return 1 ;
