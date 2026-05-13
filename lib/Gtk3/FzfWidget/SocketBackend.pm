@@ -63,30 +63,38 @@ $self->{_current_query} = $query ;
 my $process = $self->{process} ;
 
 # post_action forks a child to POST the change-query, returns immediately.
-# _send_query stops the load timer and cancels StatePoller before calling
-# here, so StatePoller is idle and the GET fires immediately without delay.
+# fzf processes change-query instantly on its side.  We wait 50ms before
+# the GET so fzf's query state is updated before we read results.
 $process->post_action("change-query($query)") ;
 
-$process->get_state_async($limit, sub
+Glib::Timeout->add(50, sub
 	{
-	my ($state) = @_ ;
+	# If query changed during the 50ms, discard.
+	return 0 if $self->{_current_query} ne $query ;
 
-	unless ($state)
+	$process->get_state_async($limit, sub
 		{
-		_log("query_async: no state returned") ;
-		$cb->(undef, 0, 0) ;
-		return ;
-		}
+		my ($state) = @_ ;
 
-	$self->{_mc} = $state->{matchCount} // $state->{match_count} // 0 ;
-	$self->{_tc} = $state->{totalCount}  // $state->{total_count}  // 0 ;
+		unless ($state)
+			{
+			_log("query_async: no state returned") ;
+			$cb->(undef, 0, 0) ;
+			return ;
+			}
 
-	my @matches = map
-		{ { index => ($_->{index} // 0), text => ($_->{text} // '') } }
-		@{$state->{matches} // []} ;
+		$self->{_mc} = $state->{matchCount} // $state->{match_count} // 0 ;
+		$self->{_tc} = $state->{totalCount}  // $state->{total_count}  // 0 ;
 
-	_log("query_async RESULT: mc=$self->{_mc} tc=$self->{_tc} returned=" . scalar(@matches)) ;
-	$cb->(\@matches, $self->{_mc}, $self->{_tc}) ;
+		my @matches = map
+			{ { index => ($_->{index} // 0), text => ($_->{text} // '') } }
+			@{$state->{matches} // []} ;
+
+		_log("query_async RESULT: mc=$self->{_mc} tc=$self->{_tc} returned=" . scalar(@matches)) ;
+		$cb->(\@matches, $self->{_mc}, $self->{_tc}) ;
+		}) ;
+
+	return 0 ;
 	}) ;
 }
 
