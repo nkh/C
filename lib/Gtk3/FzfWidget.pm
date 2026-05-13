@@ -1410,6 +1410,8 @@ $self->_stop_query_refresh_timer() ;
 return if $query eq '' ;
 
 my $prev_mc = $self->{_match_count} ;
+my $prev_tc = $self->{_total_count} ;
+my $total_items = scalar @{$self->{_all_items}} ;
 my $stable  = 0 ;
 my $batch   = $self->{prefetch_buffer} * 10 ;
 my $pending = 0 ;
@@ -1489,9 +1491,9 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 				$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
 				$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 				}
-			elsif ($mc == $prev_mc)
-				{
-				$stable++ ;
+				elsif ($mc == $prev_mc && $tc == $prev_tc)
+					{
+					$stable++ ;
 				$self->_dbg("query_refresh: stable=$stable mc=$mc") ;
 
 				if ($stable >= 3)
@@ -1509,6 +1511,7 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 				}
 
 			$prev_mc = $mc ;
+			$prev_tc = $tc ;
 			}) ;
 
 		return 1 ;

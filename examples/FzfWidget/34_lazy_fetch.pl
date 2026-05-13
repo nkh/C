@@ -20,6 +20,7 @@
 
 use strict ;
 use warnings ;
+use open qw(:std :utf8) ;
 use lib '../lib' ;
 use Gtk3 -init ;
 use Gtk3::FzfWidget ;
