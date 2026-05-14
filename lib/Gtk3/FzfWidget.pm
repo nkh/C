@@ -999,7 +999,7 @@ if ($query eq '')
 			}
 
 		$self->{last_query}   = '' ;
-		$self->{_match_count} = $self->{_total_count} ;
+		$self->{_match_count} = $self->{_total_count} if $self->{_total_count} > 0 ;
 		$self->{_prefetch_at} = $show - $self->{prefetch_buffer} ;
 		$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 		$self->_update_status_label() ;
@@ -1635,16 +1635,14 @@ my $store  = $self->{list_store} ;
 my $c      = $self->{colors} ;
 my $stripe = $self->{row_striping} ;
 
-my $new_n = scalar @{$self->{_match_indices}} ;
-my $old_n = $store->iter_n_children(undef) ;
-$self->_dbg("rebuild_store: old=$old_n new=$new_n query='$query'") ;
-warn "FZFW rebuild_store: old=$old_n new=$new_n query='$query'\n" if $ENV{FZFW_TRACE} ;
+my $n = scalar @{$self->{_match_indices}} ;
+$self->_dbg("rebuild_store: n=$n query='$query'") ;
+warn "FZFW rebuild_store: n=$n query='$query'\n" if $ENV{FZFW_TRACE} ;
 
-# Update in-place: overwrite existing iters, append extras, trim tail.
-# Avoids store->clear() which causes a blank-flash redraw.
-my @new_iters ;
+$store->clear() ;
+$self->{_row_iters} = [] ;
 
-for my $row (0 .. $new_n - 1)
+for my $row (0 .. $n - 1)
 	{
 	my $orig_idx = $self->{_match_indices}[$row] ;
 	next unless defined $orig_idx ;
@@ -1663,10 +1661,7 @@ for my $row (0 .. $new_n - 1)
 		? ($c->{cursor_bg} // '#2d6db5')
 		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
-	my $iter = ($row < $old_n && $self->{_row_iters}[$row])
-		? $self->{_row_iters}[$row]
-		: $store->append() ;
-
+	my $iter = $store->append() ;
 	$store->set($iter,
 		0, $markup,
 		1, $orig_idx,
@@ -1674,7 +1669,7 @@ for my $row (0 .. $new_n - 1)
 		3, $cell_bg // '#000000',
 		4, $cell_bg ? 1 : 0,
 		) ;
-	push @new_iters, $iter ;
+	$self->{_row_iters}[$row] = $iter ;
 
 	if ($self->{image_fn})
 		{
@@ -1687,15 +1682,6 @@ for my $row (0 .. $new_n - 1)
 			}
 		}
 	}
-
-# Trim rows beyond the new count (remove back-to-front to keep iters valid).
-for my $row (reverse $new_n .. $old_n - 1)
-	{
-	my $iter = $self->{_row_iters}[$row] ;
-	$store->remove($iter) if $iter ;
-	}
-
-$self->{_row_iters} = \@new_iters ;
 }
 # ------------------------------------------------------------------------------
 # Progress watch — reads item counts written by ItemWriter child via a pipe.
