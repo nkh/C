@@ -1634,14 +1634,14 @@ my $store  = $self->{list_store} ;
 my $c      = $self->{colors} ;
 my $stripe = $self->{row_striping} ;
 
-my $n = scalar @{$self->{_match_indices}} ;
-$self->_dbg("rebuild_store: n=$n query='$query' store_rows_before=" . $store->iter_n_children(undef)) ;
-warn "FZFW rebuild_store: n=$n query='$query'\n" if $ENV{FZFW_TRACE} ;
+my $new_n = scalar @{$self->{_match_indices}} ;
+my $old_n = $store->iter_n_children(undef) ;
+$self->_dbg("rebuild_store: old=$old_n new=$new_n query='$query'") ;
+warn "FZFW rebuild_store: old=$old_n new=$new_n query='$query'\n" if $ENV{FZFW_TRACE} ;
 
-$store->clear() ;
-$self->{_row_iters} = [] ;   # row -> Gtk3::TreeIter, O(1) lookup
-
-for my $row (0 .. $#{$self->{_match_indices}})
+# Update rows in-place to avoid a clear+refill flash.
+# Overwrite existing rows, append if new_n > old_n, remove tail if new_n < old_n.
+for my $row (0 .. $new_n - 1)
 	{
 	my $orig_idx = $self->{_match_indices}[$row] ;
 	next unless defined $orig_idx ;
@@ -1660,7 +1660,10 @@ for my $row (0 .. $#{$self->{_match_indices}})
 		? ($c->{cursor_bg} // '#2d6db5')
 		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
-	my $iter = $store->append() ;
+	my $iter = $row < $old_n
+		? $store->iter_nth_child(undef, $row)
+		: $store->append() ;
+
 	$store->set($iter,
 		0, $markup,
 		1, $orig_idx,
@@ -1680,6 +1683,19 @@ for my $row (0 .. $#{$self->{_match_indices}})
 			$self->{pixbuf_col}->set_visible(1) ;
 			}
 		}
+	}
+
+# Remove trailing rows if new result set is smaller.
+for my $row (reverse $new_n .. $old_n - 1)
+	{
+	my $iter = $store->iter_nth_child(undef, $row) ;
+	$store->remove($iter) if $iter ;
+	}
+
+$self->{_row_iters} = [] ;
+for my $row (0 .. $new_n - 1)
+	{
+	$self->{_row_iters}[$row] = $store->iter_nth_child(undef, $row) ;
 	}
 }
 # ------------------------------------------------------------------------------
@@ -1766,26 +1782,14 @@ $self->{_load_timer} = Glib::Timeout->add(
 			}
 
 		# Coderef source (total_items==0): items arrive via fzf only.
-		# Keep polling _total_count until _send_query or widget destruction
-		# stops us.  Never stop automatically — fzf indexes in large batches
-		# and two consecutive equal tc values do not mean indexing is done.
+		# Keep polling until _send_query or widget destruction stops us.
 
 		return 1 if $self->{_fetch_in_flight} ;
 
 		my $already = scalar @{$self->{_match_indices}} ;
 
-		# Update match_count from store size every tick so the counter
-		# increments immediately as rows are appended, without waiting
-		# for fzf's HTTP response.
-		if ($already > ($self->{_match_count} // 0))
-			{
-			$self->{_match_count} = $already ;
-			$self->_update_status_label() ;
-			}
-
 		# When a query is active the query_refresh_timer owns the store.
-		# Poll _total_count and _match_count so the counter keeps updating
-		# as fzf indexes items in the background.
+		# Only poll counts so the counter keeps updating.
 		if ($query ne '')
 			{
 			$self->{_backend}->fetch_async(1, sub
@@ -1793,7 +1797,7 @@ $self->{_load_timer} = Glib::Timeout->add(
 				my ($m, $mc, $tc) = @_ ;
 				return unless defined $tc ;
 				$self->{_total_count} = $tc ;
-				$self->{_match_count} = $mc if defined $mc && $mc > ($self->{_match_count} // 0) ;
+				$self->{_match_count} = $mc if defined $mc ;
 				$self->_update_status_label() ;
 				}) ;
 			return 1 ;
@@ -1807,7 +1811,7 @@ $self->{_load_timer} = Glib::Timeout->add(
 			my ($m, $mc, $tc) = @_ ;
 			return unless defined $tc ;
 			$self->{_total_count} = $tc ;
-			$self->{_match_count} = $tc ;    # empty query: all indexed items match
+			$self->{_match_count} = $tc ;   # empty query: all indexed items match
 			$self->_update_status_label() ;
 
 			return unless $m && @$m ;
