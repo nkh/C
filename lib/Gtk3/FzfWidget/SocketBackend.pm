@@ -79,7 +79,7 @@ Glib::Timeout->add(50, sub
 		unless ($state)
 			{
 			_log("query_async: no state returned") ;
-			$cb->(undef, 0, 0) ;
+			$cb->(undef, undef, undef) ;
 			return ;
 			}
 
@@ -113,7 +113,7 @@ $self->{process}->get_state_async($limit, sub
 	unless ($state)
 		{
 		_log("fetch_async: no state returned") ;
-		$cb->(undef, 0, 0) ;
+		$cb->(undef, undef, undef) ;
 		return ;
 		}
 
