@@ -78,6 +78,7 @@ my $widget = Gtk3::FzfWidget->new(
 		on_confirm => sub
 			{
 			my ($w, $sel, $query) = @_ ;
+			binmode(STDOUT, ":utf8") ;
 			print "$_->[0]\n" for @$sel ;
 			Gtk3->main_quit() ;
 			},
