@@ -1779,78 +1779,33 @@ $self->{_load_timer} = Glib::Timeout->add(
 			return 1 ;
 			}
 
-		# Coderef source (total_items==0): items arrive via fzf only.
-		# Keep polling until _send_query or widget destruction stops us.
+		# Coderef source (total_items==0): items are written to fzf by ItemWriter.
+		# Poll fzf with limit=0 to get totalCount cheaply — that is the number of
+		# items fzf has received so far.  With an empty query every pushed item
+		# matches, so match_count == total_count.  Row fetching is driven separately
+		# by _prefetch_more (user scroll) — the load timer only owns the counter.
 
-		return 1 if $self->{_fetch_in_flight} ;
-
-		my $already = scalar @{$self->{_match_indices}} ;
-
-		# When a query is active the query_refresh_timer owns the store.
-		# Only poll counts so the counter keeps updating.
 		if ($query ne '')
 			{
-			$self->{_backend}->fetch_async(1, sub
+			# Query active: refresh timer owns match_count.  Only update total_count.
+			$self->{_backend}->fetch_async(0, sub
 				{
 				my ($m, $mc, $tc) = @_ ;
 				return unless defined $tc ;
 				$self->{_total_count} = $tc ;
-				$self->{_match_count} = $mc if defined $mc ;
 				$self->_update_status_label() ;
 				}) ;
 			return 1 ;
 			}
 
-		# Empty query: fetch and append new rows from fzf.
-		my $want = $already + $self->{prefetch_buffer} * 2 ;
-
-		$self->{_backend}->fetch_async($want, sub
+		# Empty query: total_count == match_count (all items match).
+		$self->{_backend}->fetch_async(0, sub
 			{
 			my ($m, $mc, $tc) = @_ ;
 			return unless defined $tc ;
 			$self->{_total_count} = $tc ;
-			$self->{_match_count} = $tc ;   # empty query: all indexed items match
+			$self->{_match_count} = $tc ;
 			$self->_update_status_label() ;
-
-			return unless $m && @$m ;
-			my $new_fetched = scalar @$m ;
-			return unless $new_fetched > $already ;
-
-			# Cache text from fzf into _all_items, then append new rows.
-			for my $mi (@$m)
-				{
-				my $idx = $mi->{index} ;
-				$self->{_all_items}[$idx] //= $mi->{text}
-					if defined $idx && defined $mi->{text} && length($mi->{text}) ;
-				}
-
-			my @all_indices = map { $_->{index} } @$m ;
-			my $q      = $self->{entry}->get_text() ;
-			my $store  = $self->{list_store} ;
-			my $stripe = $self->{row_striping} ;
-
-			for my $row ($already .. $new_fetched - 1)
-				{
-				my $orig_idx = $all_indices[$row] ;
-				next unless defined $orig_idx ;
-				my $text    = $self->{_all_items}[$orig_idx] // '' ;
-				my $display = $self->{transform_fn}
-					? ($self->{transform_fn}->($text) // $text)
-					: $text ;
-				my $markup  = $self->_make_markup($display, [], 0, undef, $text) ;
-				my $cell_bg = $stripe
-					? $stripe->[$row % scalar @$stripe]
-					: undef ;
-				my $iter = $store->append() ;
-				$store->set($iter, 0, $markup, 1, $orig_idx, 2, 0,
-					3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
-				$self->{_row_iters}[$row] = $iter ;
-				}
-
-			$self->{_match_indices} = \@all_indices ;
-			my $fetched = scalar @all_indices ;
-			$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
-			$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 			}) ;
 
 		return 1 ;
