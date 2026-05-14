@@ -1696,22 +1696,6 @@ for my $row (reverse $new_n .. $old_n - 1)
 
 $self->{_row_iters} = \@new_iters ;
 }
-		}
-	}
-
-# Remove trailing rows if new result set is smaller.
-for my $row (reverse $new_n .. $old_n - 1)
-	{
-	my $iter = $store->iter_nth_child(undef, $row) ;
-	$store->remove($iter) if $iter ;
-	}
-
-$self->{_row_iters} = [] ;
-for my $row (0 .. $new_n - 1)
-	{
-	$self->{_row_iters}[$row] = $store->iter_nth_child(undef, $row) ;
-	}
-}
 # ------------------------------------------------------------------------------
 # Initial load timer — fires every poll_ms until backend has indexed all items.
 # Stops itself once total_count equals item count.
