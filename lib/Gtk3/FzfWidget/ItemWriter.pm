@@ -46,9 +46,10 @@ my ($class, %args) = @_ ;
 
 my $self =
 	{
-	items => $args{items},   # arrayref or coderef
-	fh    => $args{fh},      # write end of the fzf stdin pipe
-	pid   => undef,          # writer child pid
+	items       => $args{items},        # arrayref or coderef
+	fh          => $args{fh},           # write end of the fzf stdin pipe
+	progress_fh => $args{progress_fh},  # write end of the progress pipe (optional)
+	pid         => undef,               # writer child pid
 	} ;
 
 return bless $self, $class ;
@@ -75,14 +76,16 @@ unless (defined $pid)
 if ($pid == 0)
 	{
 	# Child: write all items then exit.
-	# Do not touch GTK, Glib, or any filehandle except $fh.
-	_write_items($fh, $items) ;
+	# Do not touch GTK, Glib, or any filehandle except $fh and progress_fh.
+	_write_items($fh, $items, $self->{progress_fh}) ;
 	close $fh ;
+	close $self->{progress_fh} if $self->{progress_fh} ;
 	_exit(0) ;
 	}
 
-# Parent: close write end (child has it), record pid.
+# Parent: close write ends (child has them).
 close $fh ;
+close $self->{progress_fh} if $self->{progress_fh} ;
 $self->{pid} = $pid ;
 
 return 1 ;
@@ -127,14 +130,15 @@ $self->{pid} = undef ;
 
 sub _write_items
 {
-my ($fh, $items) = @_ ;
+my ($fh, $items, $progress_fh) = @_ ;
 
 binmode($fh, ':raw') ;
 
 if (ref $items eq 'CODE')
 	{
 	# Iterator protocol: call until undef is returned.
-	my $buf = '' ;
+	my $buf   = '' ;
+	my $total = 0 ;
 
 	while (1)
 		{
@@ -149,20 +153,24 @@ if (ref $items eq 'CODE')
 			next unless defined $item ;
 			my $line = is_utf8($item) ? encode_utf8($item) : $item ;
 			$buf .= $line . "\n" ;
+			$total++ ;
 
 			if (length($buf) >= $WRITE_BATCH * 80)
 				{
 				_flush($fh, \$buf) ;
+				_report_progress($progress_fh, $total) ;
 				}
 			}
 		}
 
 	_flush($fh, \$buf) if length $buf ;
+	_report_progress($progress_fh, $total) ;
 	}
 elsif (ref $items eq 'ARRAY')
 	{
-	my $buf  = '' ;
-	my $n    = 0 ;
+	my $buf   = '' ;
+	my $n     = 0 ;
+	my $total = 0 ;
 
 	for my $item (@$items)
 		{
@@ -170,16 +178,28 @@ elsif (ref $items eq 'ARRAY')
 		my $line = is_utf8($item) ? encode_utf8($item) : $item ;
 		$buf .= $line . "\n" ;
 		$n++ ;
+		$total++ ;
 
 		if ($n >= $WRITE_BATCH)
 			{
 			_flush($fh, \$buf) ;
+			_report_progress($progress_fh, $total) ;
 			$n = 0 ;
 			}
 		}
 
 	_flush($fh, \$buf) if length $buf ;
+	_report_progress($progress_fh, $total) ;
 	}
+}
+
+# ------------------------------------------------------------------------------
+
+sub _report_progress
+{
+my ($fh, $n) = @_ ;
+return unless $fh ;
+syswrite($fh, "$n\n") ;
 }
 
 # ------------------------------------------------------------------------------

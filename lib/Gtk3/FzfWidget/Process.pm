@@ -246,18 +246,23 @@ if ($pid == 0)
 
 close $in_r ;
 
+# Progress pipe: ItemWriter child writes item counts; parent reads via IO watch.
+pipe(my $prog_r, my $prog_w) or do { warn "pipe failed: $!" ; $prog_r = $prog_w = undef } ;
+
 # Fork a writer child to stream items to fzf asynchronously.
 # This returns immediately — the GTK main loop is never blocked.
 my $writer = Gtk3::FzfWidget::ItemWriter->new(
-	items => $self->{items},
-	fh    => $in_w,
+	items       => $self->{items},
+	fh          => $in_w,
+	progress_fh => $prog_w,
 	) ;
 
 $writer->start() ;
 
-$self->{writer} = $writer ;
-$self->{pid}    = $pid ;
-$self->{pty}    = $pty ;
+$self->{writer}     = $writer ;
+$self->{pid}        = $pid ;
+$self->{pty}        = $pty ;
+$self->{progress_r} = $prog_r ;
 
 $self->_watch_death() ;
 
@@ -413,6 +418,12 @@ if ($self->{writer})
 	$self->{writer} = undef ;
 	}
 
+if ($self->{progress_r})
+	{
+	close $self->{progress_r} ;
+	$self->{progress_r} = undef ;
+	}
+
 if ($self->{pid})
 	{
 	kill 'TERM', $self->{pid} ;
@@ -445,6 +456,10 @@ Glib::Timeout->add(
 # ------------------------------------------------------------------------------
 
 sub reset_restart_count { $_[0]->{restart_count} = 0 }
+
+# ------------------------------------------------------------------------------
+
+sub progress_pipe_r { $_[0]->{progress_r} }
 
 # ------------------------------------------------------------------------------
 

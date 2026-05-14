@@ -279,6 +279,7 @@ $self->{_total_count}          = 0 ;       # total items known to backend
 $self->{_fetch_in_flight}      = 0 ;       # 1 while fetch_async is pending
 $self->{_prefetch_at}          = 0 ;       # trigger prefetch when local_pos >= this
 $self->{_load_timer}           = undef ;   # fires until all items indexed; then stops
+$self->{_progress_watch}       = undef ;   # Glib::IO watch on ItemWriter progress pipe
 $self->{_query_refresh_timer}  = undef ;   # fires after query change until mc stabilises
 $self->{layout_obj}            = undef ;
 $self->{entry}                 = undef ;
@@ -1697,6 +1698,77 @@ for my $row (reverse $new_n .. $old_n - 1)
 $self->{_row_iters} = \@new_iters ;
 }
 # ------------------------------------------------------------------------------
+# Progress watch — reads item counts written by ItemWriter child via a pipe.
+# Fires for coderef sources only; gives immediate counter updates without
+# polling fzf over HTTP.
+
+sub _start_progress_watch
+{
+my ($self) = @_ ;
+
+$self->_stop_progress_watch() ;
+
+my $pipe_r = $self->{process} && $self->{process}->progress_pipe_r()
+	or return ;
+
+$self->{_progress_buf} = '' ;
+
+$self->{_progress_watch} = Glib::IO->add_watch(
+	fileno($pipe_r),
+	['in', 'hup', 'err'],
+	sub
+		{
+		my ($fd, $cond) = @_ ;
+
+		my $chunk = '' ;
+		my $n = sysread($pipe_r, $chunk, 4096) ;
+
+		if (defined $n && $n > 0)
+			{
+			$self->{_progress_buf} .= $chunk ;
+
+			# Each progress report is "N
+".  Take the last complete line.
+			while ($self->{_progress_buf} =~ s/^(\d+)
+//)
+				{
+				my $count = $1 + 0 ;
+				$self->{_total_count} = $count ;
+
+				my $q = $self->{entry}->get_text() ;
+				$self->{_match_count} = $count if $q eq '' ;
+
+				$self->_update_status_label() ;
+				}
+			}
+
+		# HUP/ERR or EOF: pipe closed, ItemWriter done.
+		my @conds = ref $cond ? @$cond : ($cond) ;
+		if (!defined $n || $n == 0 || grep { $_ eq 'hup' || $_ eq 'err' } @conds)
+			{
+			$self->_stop_progress_watch() ;
+			return 0 ;
+			}
+
+		return 1 ;
+		},
+	) ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub _stop_progress_watch
+{
+my ($self) = @_ ;
+
+if ($self->{_progress_watch})
+	{
+	Glib::Source->remove($self->{_progress_watch}) ;
+	$self->{_progress_watch} = undef ;
+	}
+}
+
+# ------------------------------------------------------------------------------
 # Initial load timer — fires every poll_ms until backend has indexed all items.
 # Stops itself once total_count equals item count.
 
@@ -2507,6 +2579,9 @@ if (@{$self->{initial_selection}})
 		) ;
 	}
 
+# For coderef sources: track item count via ItemWriter progress pipe.
+# For arrayref sources: use the load timer (items already in _all_items).
+$self->_start_progress_watch() ;
 $self->_start_load_timer() ;
 $self->{entry}->grab_focus() ;
 $self->{entry}->set_position(-1) ;
