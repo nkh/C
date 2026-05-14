@@ -1639,8 +1639,10 @@ my $old_n = $store->iter_n_children(undef) ;
 $self->_dbg("rebuild_store: old=$old_n new=$new_n query='$query'") ;
 warn "FZFW rebuild_store: old=$old_n new=$new_n query='$query'\n" if $ENV{FZFW_TRACE} ;
 
-# Update rows in-place to avoid a clear+refill flash.
-# Overwrite existing rows, append if new_n > old_n, remove tail if new_n < old_n.
+# Update in-place: overwrite existing iters, append extras, trim tail.
+# Avoids store->clear() which causes a blank-flash redraw.
+my @new_iters ;
+
 for my $row (0 .. $new_n - 1)
 	{
 	my $orig_idx = $self->{_match_indices}[$row] ;
@@ -1660,8 +1662,8 @@ for my $row (0 .. $new_n - 1)
 		? ($c->{cursor_bg} // '#2d6db5')
 		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
-	my $iter = $row < $old_n
-		? $store->iter_nth_child(undef, $row)
+	my $iter = ($row < $old_n && $self->{_row_iters}[$row])
+		? $self->{_row_iters}[$row]
 		: $store->append() ;
 
 	$store->set($iter,
@@ -1671,7 +1673,7 @@ for my $row (0 .. $new_n - 1)
 		3, $cell_bg // '#000000',
 		4, $cell_bg ? 1 : 0,
 		) ;
-	$self->{_row_iters}[$row] = $iter ;
+	push @new_iters, $iter ;
 
 	if ($self->{image_fn})
 		{
@@ -1682,6 +1684,18 @@ for my $row (0 .. $new_n - 1)
 			$self->{has_images} = 1 ;
 			$self->{pixbuf_col}->set_visible(1) ;
 			}
+		}
+	}
+
+# Trim rows beyond the new count (remove back-to-front to keep iters valid).
+for my $row (reverse $new_n .. $old_n - 1)
+	{
+	my $iter = $self->{_row_iters}[$row] ;
+	$store->remove($iter) if $iter ;
+	}
+
+$self->{_row_iters} = \@new_iters ;
+}
 		}
 	}
 
