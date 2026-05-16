@@ -1639,7 +1639,7 @@ my $n = scalar @{$self->{_match_indices}} ;
 $self->_dbg("rebuild_store: n=$n query='$query'") ;
 warn "FZFW rebuild_store: n=$n query='$query'\n" if $ENV{FZFW_TRACE} ;
 
-$self->{tree_view}->freeze_child_notify() ;
+$self->{tree_view}->set_model(undef) ;
 $store->clear() ;
 $self->{_row_iters} = [] ;
 
@@ -1684,7 +1684,7 @@ for my $row (0 .. $n - 1)
 		}
 	}
 
-$self->{tree_view}->thaw_child_notify() ;
+$self->{tree_view}->set_model($store) ;
 }
 # ------------------------------------------------------------------------------
 # Progress watch — reads item counts written by ItemWriter child via a pipe.
