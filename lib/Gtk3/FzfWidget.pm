@@ -968,10 +968,8 @@ if ($query eq '')
 	{
 	my $cached = scalar @{$self->{_all_items}} ;
 
-	$self->{_match_indices} = [] ;
-	$self->{_row_iters}     = [] ;
-	$self->{local_pos}      = 0 ;
-	$self->{list_store}->clear() ;
+	$self->_store_reset() ;
+	$self->{local_pos} = 0 ;
 
 	# Rebuild from whatever items we have cached.  The load timer will
 	# append more as fzf continues indexing.
@@ -980,7 +978,6 @@ if ($query eq '')
 		my $show = $cached < $self->{prefetch_buffer} * 2
 			? $cached
 			: $self->{prefetch_buffer} * 2 ;
-		my $store  = $self->{list_store} ;
 		my $stripe = $self->{row_striping} ;
 
 		for my $row (0 .. $show - 1)
@@ -1009,10 +1006,8 @@ if ($query eq '')
 	}
 
 # Non-empty query or no cached items: clear store and ask fzf.
-$self->{_match_indices} = [] ;
-$self->{_row_iters}     = [] ;
-$self->{local_pos}      = 0 ;
-$self->{list_store}->clear() ;
+$self->_store_reset() ;
+$self->{local_pos} = 0 ;
 $self->_update_status_label() ;
 
 $self->_query_backend($query) ;
@@ -1261,6 +1256,85 @@ if ($new_pos < $vis_start_i || $new_pos > $vis_end_i)
 }
 
 # ------------------------------------------------------------------------------
+# Store abstraction — all direct list_store / _row_iters / _match_indices
+# access goes through these subs.  Phase 1: identical behaviour to current
+# inline code.  Phase 2 (future): swap to TreeModelFilter + visibility column.
+
+sub _store_reset
+{
+my ($self) = @_ ;
+
+$self->{_match_indices} = [] ;
+$self->{_row_iters}     = [] ;
+$self->{list_store}->clear() ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub _store_append_row
+{
+my ($self, $row, $orig_idx, $markup, $cell_bg, $selected) = @_ ;
+
+my $iter = $self->{list_store}->append() ;
+$self->{list_store}->set($iter,
+	0, $markup,
+	1, $orig_idx,
+	2, ($selected ? 1 : 0),
+	3, $cell_bg // '#000000',
+	4, $cell_bg ? 1 : 0,
+	) ;
+$self->{_row_iters}[$row] = $iter ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub _store_append_row_pixbuf
+{
+my ($self, $row, $orig_idx, $markup, $cell_bg, $selected, $pb) = @_ ;
+
+$self->_store_append_row($row, $orig_idx, $markup, $cell_bg, $selected) ;
+$self->{list_store}->set($self->{_row_iters}[$row], 5, $pb) ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub _store_set_row
+{
+my ($self, $row, $markup, $cell_bg, $selected) = @_ ;
+
+my $iter = $self->{_row_iters}[$row] ;
+return unless $iter ;
+
+$self->{list_store}->set($iter,
+	0, $markup,
+	3, $cell_bg // '#000000',
+	4, $cell_bg ? 1 : 0,
+	) ;
+$self->{list_store}->set($iter, 2, ($selected ? 1 : 0))
+	if $self->{multi} ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub _store_set_selected
+{
+my ($self, $row, $selected) = @_ ;
+
+my $iter = $self->{_row_iters}[$row] ;
+return unless $iter ;
+$self->{list_store}->set($iter, 2, ($selected ? 1 : 0)) ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub _store_set_match_indices
+{
+my ($self, $indices) = @_ ;
+$self->{_match_indices} = $indices ;
+}
+
+
+# ------------------------------------------------------------------------------
 # Redraw the two rows affected by a cursor move (old and new position).
 # Uses filter-model row numbers.  Triggers a cell-data-func repaint by
 # invalidating the markup column on those two store rows.
@@ -1272,8 +1346,7 @@ my ($self, $old_pos, $new_pos) = @_ ;
 # Store row = filter-model row (plain ListStore, no filter).
 # Only update the two rows that changed: old cursor and new cursor.
 my $query = $self->{entry}->get_text() ;
-my $store = $self->{list_store} ;
-my $c     = $self->{colors} ;
+my $c      = $self->{colors} ;
 my $stripe = $self->{row_striping} ;
 
 for my $row ($old_pos, $new_pos)
@@ -1282,8 +1355,7 @@ for my $row ($old_pos, $new_pos)
 	my $orig_idx = $self->{_match_indices}[$row] ;
 	next unless defined $orig_idx ;
 
-	my $iter = $self->{_row_iters}[$row] ;
-	next unless $iter ;
+	next unless $self->{_row_iters}[$row] ;
 
 	my $text    = $self->{_all_items}[$orig_idx] // '' ;
 	my $display = $self->{transform_fn}
@@ -1299,9 +1371,7 @@ for my $row ($old_pos, $new_pos)
 		? ($c->{cursor_bg} // '#2d6db5')
 		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
-	$store->set($iter, 0, $markup, 3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
-	$store->set($iter, 2, ($self->{local_selected}{$orig_idx} ? 1 : 0))
-		if $self->{multi} ;
+	$self->_store_set_row($row, $markup, $cell_bg, $self->{local_selected}{$orig_idx} // 0) ;
 	}
 }
 
@@ -1354,7 +1424,7 @@ $self->{local_selected} = {}
 $self->{last_query}     = $query ;
 $self->{_match_count}   = $mc ;
 $self->{_total_count}   = $tc ;
-$self->{_match_indices} = [ map { $_->{index} } @$matches ] ;
+$self->_store_set_match_indices([ map { $_->{index} } @$matches ]) ;
 	# Cache text from fzf response into _all_items for immediate display.
 	for my $m (@$matches)
 		{
@@ -1462,7 +1532,6 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 					}
 
 				my @all_indices = map { $_->{index} } @{$matches // []} ;
-				my $store  = $self->{list_store} ;
 				my $stripe = $self->{row_striping} ;
 
 				for my $row ($already .. $new_fetched - 1)
@@ -1487,7 +1556,7 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 					$self->{_row_iters}[$row] = $iter ;
 					}
 
-				$self->{_match_indices} = \@all_indices ;
+				$self->_store_set_match_indices(\@all_indices) ;
 				my $fetched = scalar @{$self->{_match_indices}} ;
 				$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
 				$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
@@ -1575,7 +1644,7 @@ $self->{_backend}->fetch_async($want, sub
 			if defined $idx && defined $m->{text} && length($m->{text}) ;
 		}
 
-	$self->{_match_indices} = [ map { $_->{index} } @$matches ] ;
+	$self->_store_set_match_indices([ map { $_->{index} } @$matches ]) ;
 
 	my $new_count = scalar @{$self->{_match_indices}} ;
 	$self->{_prefetch_at} = $new_count - $self->{prefetch_buffer} ;
@@ -1589,7 +1658,6 @@ $self->{_backend}->fetch_async($want, sub
 	if ($new_count > $old_count)
 		{
 		my $query = $self->{entry}->get_text() ;
-		my $store = $self->{list_store} ;
 		my $stripe = $self->{row_striping} ;
 
 		for my $row ($old_count .. $new_count - 1)
@@ -1631,7 +1699,6 @@ sub _rebuild_store
 my ($self, $query) = @_ ;
 
 $query //= $self->{entry}->get_text() ;
-my $store  = $self->{list_store} ;
 my $c      = $self->{colors} ;
 my $stripe = $self->{row_striping} ;
 
@@ -1797,7 +1864,6 @@ $self->{_load_timer} = Glib::Timeout->add(
 				my $batch_end = $already + $self->{prefetch_buffer} * 2 ;
 				$batch_end = $total_items if $batch_end > $total_items ;
 
-				my $store  = $self->{list_store} ;
 				my $stripe = $self->{row_striping} ;
 
 				for my $row ($already .. $batch_end - 1)
@@ -2439,7 +2505,7 @@ my ($self, $items, $query) = @_ ;
 $self->_stop_load_timer() ;
 $self->_stop_query_refresh_timer() ;
 $self->{_backend}         = undef ;
-$self->{_match_indices}   = [] ;
+$self->_store_reset() ;
 $self->{_match_count}     = 0 ;
 $self->{_total_count}     = 0 ;
 $self->{_fetch_in_flight} = 0 ;
@@ -2682,8 +2748,7 @@ for my $target_idx (@{$self->{initial_selection}})
 			{
 			$self->{local_selected}{$target_idx} = 1 ;
 
-			my $siter = $self->{_row_iters}[$filter_row] ;
-			$self->{list_store}->set($siter, 2, 1) if $siter ;
+			$self->_store_set_selected($filter_row, 1) ;
 			last ;
 			}
 		}
