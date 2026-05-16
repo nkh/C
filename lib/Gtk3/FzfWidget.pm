@@ -1713,24 +1713,23 @@ $self->{_progress_watch} = Glib::IO->add_watch(
 			{
 			$self->{_progress_buf} .= $chunk ;
 
-			# Each progress report is "N
-".  Take the last complete line.
-			while ($self->{_progress_buf} =~ s/^(\d+)
-//)
+			while ($self->{_progress_buf} =~ s/^(\d+)\n//)
 				{
-				my $count = $1 + 0 ;
-				$self->{_total_count} = $count ;
+				my $cnt = $1 + 0 ;
+				$self->{_total_count} = $cnt ;
 
 				my $q = $self->{entry}->get_text() ;
-				$self->{_match_count} = $count if $q eq '' ;
+				$self->{_match_count} = $cnt if $q eq '' ;
 
 				$self->_update_status_label() ;
 				}
 			}
 
-		# HUP/ERR or EOF: pipe closed, ItemWriter done.
-		my @conds = ref $cond ? @$cond : ($cond) ;
-		if (!defined $n || $n == 0 || grep { $_ eq 'hup' || $_ eq 'err' } @conds)
+		my $is_hup = !defined $n || $n == 0
+			|| (ref $cond && grep { $_ eq 'hup' || $_ eq 'err' } @{$cond})
+			|| (!ref $cond && ($cond eq 'hup' || $cond eq 'err')) ;
+
+		if ($is_hup)
 			{
 			$self->_stop_progress_watch() ;
 			return 0 ;
@@ -1740,8 +1739,6 @@ $self->{_progress_watch} = Glib::IO->add_watch(
 		},
 	) ;
 }
-
-# ------------------------------------------------------------------------------
 
 sub _stop_progress_watch
 {
