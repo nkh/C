@@ -247,7 +247,8 @@ if ($pid == 0)
 close $in_r ;
 
 # Progress pipe: ItemWriter child writes item counts; parent reads via IO watch.
-pipe(my $prog_r, my $prog_w) or do { warn "pipe failed: $!" ; $prog_r = $prog_w = undef } ;
+my ($prog_r, $prog_w) ;
+pipe($prog_r, $prog_w) or warn "pipe failed: $!" ;
 
 # Fork a writer child to stream items to fzf asynchronously.
 # This returns immediately — the GTK main loop is never blocked.
