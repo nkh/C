@@ -3,13 +3,36 @@ package Gtk3::FzfWidget::Store ;
 use strict ;
 use warnings ;
 
-# Store abstraction — all direct list_store / _row_iters / _match_indices
-# access goes through these subs.  Phase 1: identical behaviour to current
-# inline code.  Phase 2 (future): swap to TreeModelFilter + visibility column.
+# col 0 = markup, col 1 = original index, col 2 = selected flag,
+# col 3 = cell-background string, col 4 = cell-background-set boolean,
+# col 5 = pixbuf (optional)
 
 # ------------------------------------------------------------------------------
 
-sub _store_reset
+sub new
+{
+my ($class) = @_ ;
+
+my $list_store = Gtk3::ListStore->new(
+	'Glib::String', 'Glib::Int', 'Glib::Boolean',
+	'Glib::String', 'Glib::Boolean', 'Gtk3::Gdk::Pixbuf',
+	) ;
+
+return bless
+	{
+	list_store     => $list_store,
+	_row_iters     => [],
+	_match_indices => [],
+	}, $class ;
+}
+
+# ------------------------------------------------------------------------------
+
+sub model { $_[0]->{list_store} }
+
+# ------------------------------------------------------------------------------
+
+sub reset
 {
 my ($self) = @_ ;
 
@@ -20,7 +43,7 @@ $self->{list_store}->clear() ;
 
 # ------------------------------------------------------------------------------
 
-sub _store_append_row
+sub append_row
 {
 my ($self, $row, $orig_idx, $markup, $cell_bg, $selected) = @_ ;
 
@@ -37,17 +60,17 @@ $self->{_row_iters}[$row] = $iter ;
 
 # ------------------------------------------------------------------------------
 
-sub _store_append_row_pixbuf
+sub append_row_pixbuf
 {
 my ($self, $row, $orig_idx, $markup, $cell_bg, $selected, $pb) = @_ ;
 
-$self->_store_append_row($row, $orig_idx, $markup, $cell_bg, $selected) ;
+$self->append_row($row, $orig_idx, $markup, $cell_bg, $selected) ;
 $self->{list_store}->set($self->{_row_iters}[$row], 5, $pb) ;
 }
 
 # ------------------------------------------------------------------------------
 
-sub _store_set_row
+sub set_row
 {
 my ($self, $row, $markup, $cell_bg, $selected) = @_ ;
 
@@ -56,16 +79,15 @@ return unless $iter ;
 
 $self->{list_store}->set($iter,
 	0, $markup,
+	2, ($selected ? 1 : 0),
 	3, $cell_bg // '#000000',
 	4, $cell_bg ? 1 : 0,
 	) ;
-$self->{list_store}->set($iter, 2, ($selected ? 1 : 0))
-	if $self->{multi} ;
 }
 
 # ------------------------------------------------------------------------------
 
-sub _store_set_selected
+sub set_selected
 {
 my ($self, $row, $selected) = @_ ;
 
@@ -76,11 +98,18 @@ $self->{list_store}->set($iter, 2, ($selected ? 1 : 0)) ;
 
 # ------------------------------------------------------------------------------
 
-sub _store_set_match_indices
+sub set_match_indices
 {
 my ($self, $indices) = @_ ;
 $self->{_match_indices} = $indices ;
 }
+
+# ------------------------------------------------------------------------------
+
+sub match_indices { $_[0]->{_match_indices} }
+sub match_count   { scalar @{$_[0]->{_match_indices}} }
+sub orig_idx      { $_[0]->{_match_indices}[$_[1]] }
+sub iter          { $_[0]->{_row_iters}[$_[1]] }
 
 # ------------------------------------------------------------------------------
 

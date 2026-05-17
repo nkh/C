@@ -275,7 +275,7 @@ $self->{_backend}              = undef ;   # FzfBackend instance
 $self->{_all_items}            = [] ;      # all item strings, index = original index
 	$self->{_row_iters}            = [] ;      # store row -> Gtk3::TreeIter (O(1) lookup)
 	$self->{_items_src}            = undef ;   # original items source (arrayref or coderef)
-$self->{_match_indices}        = [] ;      # ordered arrayref of matching indices (fetched window)
+# _match_indices now owned by store object
 $self->{_match_count}          = 0 ;       # total matches for current query
 $self->{_total_count}          = 0 ;       # total items known to backend
 $self->{_fetch_in_flight}      = 0 ;       # 1 while fetch_async is pending
@@ -285,9 +285,7 @@ $self->{_progress_watch}       = undef ;   # Glib::IO watch on ItemWriter progre
 $self->{_query_refresh_timer}  = undef ;   # fires after query change until mc stabilises
 $self->{layout_obj}            = undef ;
 $self->{entry}                 = undef ;
-$self->{tree_view}             = undef ;
 $self->{list_store}            = undef ;
-$self->{scroll_win}            = undef ;
 $self->{status_label}          = undef ;
 $self->{info_label}            = undef ;
 $self->{header_label}          = undef ;
@@ -295,7 +293,6 @@ $self->{widget_box}            = undef ;
 $self->{error_label}           = undef ;
 $self->{ok_button}             = undef ;
 $self->{close_button}          = undef ;
-$self->{pixbuf_col}            = undef ;
 $self->{debounce_timer}        = undef ;
 $self->{query_buffer}          = undef ;
 $self->{frozen}                = 0 ;
@@ -601,76 +598,19 @@ if (@css)
 	$self->{_css_provider} = $provider ;
 	}
 
-# ListStore: col 0 = markup, col 1 = original index, col 2 = selected flag,
-# col 3 = cell-background string, col 4 = cell-background-set boolean,
-# col 5 = pixbuf (optional)
-# Only matching rows are in the store. Row N corresponds to _match_indices[N].
-$self->{list_store} = Gtk3::ListStore->new(
-	'Glib::String', 'Glib::Int', 'Glib::Boolean',
-	'Glib::String', 'Glib::Boolean', 'Gtk3::Gdk::Pixbuf',
+$self->{store} = Gtk3::FzfWidget::Store->new() ;
+
+$self->{view} = Gtk3::FzfWidget::View->new(
+	model            => $self->{store}->model(),
+	name             => $tv_name,
+	multi            => $self->{multi},
+	image_fn         => $self->{image_fn},
+	colors           => $c,
+	font_family      => $self->{font_family},
+	font_size        => $self->{font_size},
+	image_max_width  => $self->{image_max_width},
+	image_max_height => $self->{image_max_height},
 	) ;
-
-$self->{tree_view} = Gtk3::TreeView->new_with_model($self->{list_store}) ;
-$self->{tree_view}->set_name($tv_name) ;
-$self->{tree_view}->set_headers_visible(0) ;
-$self->{tree_view}->set_enable_search(0) ;
-$self->{tree_view}->get_selection()->set_mode('single') ;
-
-# Set row height via fixed-height mode when using images
-if ($self->{image_fn})
-	{
-	$self->{tree_view}->set_fixed_height_mode(1) ;
-	}
-
-# Checkbox column — always created, visible only in multi mode
-	{
-	my $toggle_col  = Gtk3::TreeViewColumn->new() ;
-	my $toggle_cell = Gtk3::CellRendererToggle->new() ;
-	$toggle_cell->set(activatable => 0) ;
-	$toggle_cell->set(cell_background => $c->{checkbox_bg}) if $c->{checkbox_bg} ;
-	$toggle_col->pack_start($toggle_cell, 0) ;
-	$toggle_col->add_attribute($toggle_cell, 'active', 2) ;
-	$toggle_col->set_sizing('fixed') if $self->{image_fn} ;
-	$toggle_col->set_visible($self->{multi} ? 1 : 0) ;
-	$self->{tree_view}->append_column($toggle_col) ;
-	$self->{_toggle_col} = $toggle_col ;
-	}
-
-# Pixbuf column — created but hidden until image_fn confirms images exist
-$self->{pixbuf_col} = Gtk3::TreeViewColumn->new() ;
-my $pixbuf_cell     = Gtk3::CellRendererPixbuf->new() ;
-$pixbuf_cell->set('width'  => $self->{image_max_width}) ;
-$pixbuf_cell->set('height' => $self->{image_max_height}) ;
-$self->{pixbuf_col}->pack_start($pixbuf_cell, 0) ;
-$self->{pixbuf_col}->add_attribute($pixbuf_cell, 'pixbuf', 5) ;
-$self->{pixbuf_col}->set_visible(0) ;
-$self->{pixbuf_col}->set_sizing('fixed') if $self->{image_fn} ;
-$self->{tree_view}->append_column($self->{pixbuf_col}) ;
-
-# Text column — markup from col 0; background via cell-data-func (no store columns)
-my $text_col  = Gtk3::TreeViewColumn->new() ;
-my $text_cell = Gtk3::CellRendererText->new() ;
-
-if ($self->{font_family} || $self->{font_size})
-	{
-	my $font_desc = '' ;
-	$font_desc .= $self->{font_family}     if $self->{font_family} ;
-	$font_desc .= ' ' . $self->{font_size} if $self->{font_size} ;
-	$text_cell->set('font' => $font_desc) ;
-	}
-
-$text_col->pack_start($text_cell, 1) ;
-$text_col->add_attribute($text_cell, 'markup', 0) ;
-$text_col->add_attribute($text_cell, 'cell-background', 3) ;
-$text_col->add_attribute($text_cell, 'cell-background-set', 4) ;
-
-$text_col->set_expand(1) ;
-$text_col->set_sizing('fixed') if $self->{image_fn} ;
-$self->{tree_view}->append_column($text_col) ;
-
-$self->{scroll_win} = Gtk3::ScrolledWindow->new(undef, undef) ;
-$self->{scroll_win}->set_policy('never', 'automatic') ;
-$self->{scroll_win}->add($self->{tree_view}) ;
 
 # Status label
 $self->{status_label} = Gtk3::Label->new('') ;
@@ -694,7 +634,7 @@ if ($self->{on_hover})
 # Layout
 $self->{layout_obj} = Gtk3::FzfWidget::Layout->new(slots => $layout_slots) ;
 
-my %layout_widgets = (query => $self->{entry}, list => $self->{scroll_win}) ;
+my %layout_widgets = (query => $self->{entry}, list => $self->{view}->widget()) ;
 
 if (defined $self->{header})
 	{
@@ -777,7 +717,7 @@ my ($self) = @_ ;
 
 $self->{entry}->signal_connect(changed => sub { $self->_on_entry_changed() }) ;
 
-$self->{tree_view}->signal_connect(
+$self->{view}->tv()->signal_connect(
 	'row-activated',
 	sub
 		{
@@ -785,7 +725,7 @@ $self->{tree_view}->signal_connect(
 
 		# path is in filter-model space
 		my $filter_row = $path->to_string() + 0 ;
-		my $orig_idx   = $self->{_match_indices}[$filter_row] ;
+		my $orig_idx   = $self->{store}->orig_idx($1) ;
 		return unless defined $orig_idx ;
 
 		my $old_pos        = $self->{local_pos} ;
@@ -799,7 +739,7 @@ $self->{tree_view}->signal_connect(
 # Clicking the checkbox, the text, or anywhere on the row all count.
 if ($self->{multi})
 	{
-	$self->{tree_view}->signal_connect(
+	$self->{view}->tv()->signal_connect(
 		'button-press-event',
 		sub
 			{
@@ -815,7 +755,7 @@ if ($self->{multi})
 			return 0 unless defined $path ;
 
 			my $filter_row = $path->to_string() + 0 ;
-			my $orig_idx   = $self->{_match_indices}[$filter_row] ;
+			my $orig_idx   = $self->{store}->orig_idx($1) ;
 			return 0 unless defined $orig_idx ;
 
 			my $old_pos = $self->{local_pos} ;
@@ -848,8 +788,8 @@ if ($self->{multi})
 # Mouse motion for on_hover
 if ($self->{on_hover})
 	{
-	$self->{tree_view}->add_events(['pointer-motion-mask']) ;
-	$self->{tree_view}->signal_connect(
+	$self->{view}->tv()->add_events(['pointer-motion-mask']) ;
+	$self->{view}->tv()->signal_connect(
 		'motion-notify-event',
 		sub
 			{
@@ -859,7 +799,7 @@ if ($self->{on_hover})
 			my ($path, $col, $cx, $cy) = $tv->get_path_at_pos($x, $y) ;
 			return 0 unless defined $path ;
 			my $filter_row = $path->to_string() + 0 ;
-			my $orig_idx   = $self->{_match_indices}[$filter_row] ;
+			my $orig_idx   = $self->{store}->orig_idx($1) ;
 			return 0 unless defined $orig_idx ;
 			my $text = $self->{_all_items}[$orig_idx] // '' ;
 			my $info = $self->{on_hover}->($self, $text, $orig_idx) ;
@@ -970,7 +910,7 @@ if ($query eq '')
 	{
 	my $cached = scalar @{$self->{_all_items}} ;
 
-	$self->_store_reset() ;
+	$self->{store}->reset() ;
 	$self->{local_pos} = 0 ;
 
 	# Rebuild from whatever items we have cached.  The load timer will
@@ -994,7 +934,7 @@ if ($query eq '')
 			$store->set($iter, 0, $markup, 1, $row, 2, 0,
 				3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
 			$self->{_row_iters}[$row] = $iter ;
-			push @{$self->{_match_indices}}, $row ;
+			push @{$self->{store}->match_indices()}, $row ;
 			}
 
 		$self->{last_query}   = '' ;
@@ -1008,7 +948,7 @@ if ($query eq '')
 	}
 
 # Non-empty query or no cached items: clear store and ask fzf.
-$self->_store_reset() ;
+$self->{store}->reset() ;
 $self->{local_pos} = 0 ;
 $self->_update_status_label() ;
 
@@ -1058,7 +998,7 @@ if ($self->_kb_matches('select_all', $keyval, $ctrl, $shift))
 		{
 		my $old_sel = { %{$self->{local_selected}} } ;
 
-		$self->{local_selected} = { map { $_ => 1 } @{$self->{_match_indices}} } ;
+		$self->{local_selected} = { map { $_ => 1 } @{$self->{store}->match_indices()} } ;
 
 		$self->_redraw_cursor($self->{local_pos}, $self->{local_pos}) ;
 		$self->_update_status_label() ;
@@ -1066,7 +1006,7 @@ if ($self->_kb_matches('select_all', $keyval, $ctrl, $shift))
 		if ($self->{on_selection_change})
 			{
 			my @sel = map { [$self->{_all_items}[$_] // '', $_] }
-				@{$self->{_match_indices}} ;
+				@{$self->{store}->match_indices()} ;
 			$self->{on_selection_change}->($self, \@sel, undef, 1, undef) ;
 			}
 		}
@@ -1143,7 +1083,7 @@ if ($ctrl && $keyval == Gtk3::Gdk::KEY_End)
 if ($self->{multi} && $self->_kb_matches('toggle', $keyval, $ctrl, $shift))
 	{
 	my $pos      = $self->{local_pos} ;
-	my $orig_idx = $self->{_match_indices}[$pos] ;
+	my $orig_idx = $self->{store}->orig_idx($1) ;
 
 	if (defined $orig_idx)
 		{
@@ -1154,7 +1094,7 @@ if ($self->{multi} && $self->_kb_matches('toggle', $keyval, $ctrl, $shift))
 		else
 			{ $self->{local_selected}{$orig_idx} = 1 }
 
-		my $count   = scalar @{$self->{_match_indices}} ;
+		my $count   = $self->{store}->match_count() ;
 		my $new_pos = $pos + 1 ;
 		$new_pos = $self->{wrap_cursor} ? 0 : $count - 1 if $new_pos >= $count ;
 
@@ -1181,7 +1121,7 @@ sub _navigate
 {
 my ($self, $delta) = @_ ;
 
-my $count = scalar @{$self->{_match_indices}} ;
+my $count = $self->{store}->match_count() ;
 return unless $count ;
 
 my $old_pos = $self->{local_pos} ;
@@ -1218,7 +1158,7 @@ $self->_scroll_to($new_pos, $old_pos) ;
 
 if ($self->{on_cursor_change})
 	{
-	my $orig_idx = $self->{_match_indices}[$new_pos] ;
+	my $orig_idx = $self->{store}->orig_idx($1) ;
 	if (defined $orig_idx)
 		{
 		my $text = $self->{_all_items}[$orig_idx] // '' ;
@@ -1232,7 +1172,7 @@ if ($self->{on_cursor_change})
 sub _visible_row_count
 {
 my ($self) = @_ ;
-my ($start, $end) = $self->{tree_view}->get_visible_range() ;
+my ($start, $end) = $self->{view}->visible_range() ;
 return 10 unless defined $start && defined $end ;
 return $end->to_string() - $start->to_string() + 1 ;
 }
@@ -1247,13 +1187,13 @@ my $cursor_path = Gtk3::TreePath->new_from_string("$new_pos") ;
 my $going_down  = ($new_pos > $old_pos) ? 1 : 0 ;
 my $row_align   = $going_down ? 1.0 : 0.0 ;
 
-my ($vis_start, $vis_end) = $self->{tree_view}->get_visible_range() ;
+my ($vis_start, $vis_end) = $self->{view}->visible_range() ;
 my $vis_start_i = defined $vis_start ? $vis_start->to_string() + 0 : 0 ;
 my $vis_end_i   = defined $vis_end   ? $vis_end->to_string()   + 0 : 0 ;
 
 if ($new_pos < $vis_start_i || $new_pos > $vis_end_i)
 	{
-	$self->{tree_view}->scroll_to_cell($cursor_path, undef, 1, $row_align, 0.0) ;
+	$self->{view}->scroll_to_row($self->{local_pos}, $row_align) ;
 	}
 }
 
@@ -1275,7 +1215,7 @@ my $stripe = $self->{row_striping} ;
 for my $row ($old_pos, $new_pos)
 	{
 	next if $row < 0 ;
-	my $orig_idx = $self->{_match_indices}[$row] ;
+	my $orig_idx = $self->{store}->orig_idx($1) ;
 	next unless defined $orig_idx ;
 
 	next unless $self->{_row_iters}[$row] ;
@@ -1294,7 +1234,7 @@ for my $row ($old_pos, $new_pos)
 		? ($c->{cursor_bg} // '#2d6db5')
 		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
-	$self->_store_set_row($row, $markup, $cell_bg, $self->{local_selected}{$orig_idx} // 0) ;
+	$self->{store}->set_row($row, $markup, $cell_bg, $self->{local_selected}{$orig_idx} // 0) ;
 	}
 }
 
@@ -1347,7 +1287,7 @@ $self->{local_selected} = {}
 $self->{last_query}     = $query ;
 $self->{_match_count}   = $mc ;
 $self->{_total_count}   = $tc ;
-$self->_store_set_match_indices([ map { $_->{index} } @$matches ]) ;
+$self->{store}->set_match_indices([ map { $_->{index} } @$matches ]) ;
 	# Cache text from fzf response into _all_items for immediate display.
 	for my $m (@$matches)
 		{
@@ -1357,11 +1297,11 @@ $self->_store_set_match_indices([ map { $_->{index} } @$matches ]) ;
 		}
 $self->{local_pos}      = 0 ;
 
-my $fetched = scalar @{$self->{_match_indices}} ;
+my $fetched = $self->{store}->match_count() ;
 $self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
 $self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 
-$self->_dbg("apply_query_result: fetched=$fetched mc=$mc prefetch_at=$self->{_prefetch_at} match_indices=[" . join(',', @{$self->{_match_indices}}[0..($fetched>5?4:$fetched-1)]) . ($fetched>5?'...' : '') . "]") ;
+$self->_dbg("apply_query_result: fetched=$fetched mc=$mc prefetch_at=$self->{_prefetch_at} match_indices=[" . join(',', @{$self->{store}->match_indices()}[0..($fetched>5?4:$fetched-1)]) . ($fetched>5?'...' : '') . "]") ;
 warn "FZFW apply_query_result: q='$query' mc=$mc fetched=$fetched\n" if $ENV{FZFW_TRACE} ;
 
 my $item_count = scalar @{$self->{_all_items}} ;
@@ -1375,7 +1315,7 @@ if ($self->{_load_timer} && $item_count > 0 && $tc >= $item_count)
 $self->_rebuild_store($query) ;
 
 $self->_update_status_label() ;
-$self->{tree_view}->scroll_to_point(0, 0) if $fetched > 0 ;
+$self->{view}->scroll_to_top() if $fetched > 0 ;
 
 # For empty query the refresh timer does not run — clear the block flag
 # and restart the load timer so _total_count keeps updating.
@@ -1425,7 +1365,7 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 		return 0 if ($self->{last_query} // '') ne $query ;
 		return 1 if $pending ;
 
-		my $already = scalar @{$self->{_match_indices}} ;
+		my $already = $self->{store}->match_count() ;
 		my $want    = $already + $batch ;
 		$pending    = 1 ;
 
@@ -1479,8 +1419,8 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 					$self->{_row_iters}[$row] = $iter ;
 					}
 
-				$self->_store_set_match_indices(\@all_indices) ;
-				my $fetched = scalar @{$self->{_match_indices}} ;
+				$self->{store}->set_match_indices(\@all_indices) ;
+				my $fetched = $self->{store}->match_count() ;
 				$self->{_prefetch_at} = $fetched - $self->{prefetch_buffer} ;
 				$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 				}
@@ -1534,7 +1474,7 @@ return if $self->{_fetch_in_flight} ;
 return if $self->{_refresh_active} ;
 return unless $self->{_backend} ;
 
-my $current = scalar @{$self->{_match_indices}} ;
+my $current = $self->{store}->match_count() ;
 my $want    = $current + $self->{prefetch_buffer} ;
 
 $self->{_fetch_in_flight} = 1 ;
@@ -1552,7 +1492,7 @@ $self->{_backend}->fetch_async($want, sub
 		return ;
 		}
 
-	my $old_count = scalar @{$self->{_match_indices}} ;
+	my $old_count = $self->{store}->match_count() ;
 	$self->{_match_count} = $mc ;
 	$self->{_total_count} = $tc ;
 
@@ -1567,9 +1507,9 @@ $self->{_backend}->fetch_async($want, sub
 			if defined $idx && defined $m->{text} && length($m->{text}) ;
 		}
 
-	$self->_store_set_match_indices([ map { $_->{index} } @$matches ]) ;
+	$self->{store}->set_match_indices([ map { $_->{index} } @$matches ]) ;
 
-	my $new_count = scalar @{$self->{_match_indices}} ;
+	my $new_count = $self->{store}->match_count() ;
 	$self->{_prefetch_at} = $new_count - $self->{prefetch_buffer} ;
 	$self->{_prefetch_at} = 0 if $self->{_prefetch_at} < 0 ;
 
@@ -1585,7 +1525,7 @@ $self->{_backend}->fetch_async($want, sub
 
 		for my $row ($old_count .. $new_count - 1)
 			{
-			my $orig_idx = $self->{_match_indices}[$row] ;
+			my $orig_idx = $self->{store}->orig_idx($1) ;
 			next unless defined $orig_idx ;
 			my $text    = $self->{_all_items}[$orig_idx] // '' ;
 			my $display = $self->{transform_fn}
@@ -1625,17 +1565,17 @@ $query //= $self->{entry}->get_text() ;
 my $c      = $self->{colors} ;
 my $stripe = $self->{row_striping} ;
 
-my $n = scalar @{$self->{_match_indices}} ;
+my $n = $self->{store}->match_count() ;
 $self->_dbg("rebuild_store: n=$n query='$query'") ;
 warn "FZFW rebuild_store: n=$n query='$query'\n" if $ENV{FZFW_TRACE} ;
 
-$self->{tree_view}->set_model(undef) ;
+$self->{view}->set_model(undef) ;
 $store->clear() ;
 $self->{_row_iters} = [] ;
 
 for my $row (0 .. $n - 1)
 	{
-	my $orig_idx = $self->{_match_indices}[$row] ;
+	my $orig_idx = $self->{store}->orig_idx($1) ;
 	next unless defined $orig_idx ;
 
 	my $text    = $self->{_all_items}[$orig_idx] // '' ;
@@ -1669,12 +1609,12 @@ for my $row (0 .. $n - 1)
 			{
 			$store->set($iter, 5, $pb) ;
 			$self->{has_images} = 1 ;
-			$self->{pixbuf_col}->set_visible(1) ;
+			$self->{view}->show_pixbuf_column() ;
 			}
 		}
 	}
 
-$self->{tree_view}->set_model($store) ;
+$self->{view}->set_model($self->{store}->model()) ;
 }
 # ------------------------------------------------------------------------------
 # Progress watch — reads item counts written by ItemWriter child via a pipe.
@@ -1780,7 +1720,7 @@ $self->{_load_timer} = Glib::Timeout->add(
 		# This is independent of how fast fzf is indexing items.
 		if ($query eq '' && $total_items > 0)
 			{
-			my $already = scalar @{$self->{_match_indices}} ;
+			my $already = $self->{store}->match_count() ;
 
 			if ($already < $total_items)
 				{
@@ -1803,17 +1743,17 @@ $self->{_load_timer} = Glib::Timeout->add(
 					$store->set($iter, 0, $markup, 1, $row, 2, 0,
 						3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
 					$self->{_row_iters}[$row] = $iter ;
-					push @{$self->{_match_indices}}, $row ;
+					push @{$self->{store}->match_indices()}, $row ;
 					}
 
-				my $fetched            = scalar @{$self->{_match_indices}} ;
+				my $fetched            = $self->{store}->match_count() ;
 				$self->{_match_count}  = $fetched ;
 				$self->{_prefetch_at}  = $fetched - $self->{prefetch_buffer} ;
 				$self->{_prefetch_at}  = 0 if $self->{_prefetch_at} < 0 ;
 				$self->_update_status_label() ;
 				}
 
-			if (scalar @{$self->{_match_indices}} >= $total_items)
+			if ($self->{store}->match_count() >= $total_items)
 				{
 				$self->_dbg("load_timer: all $total_items items in store — stopping") ;
 				$self->{_match_count} = $total_items ;
@@ -1924,7 +1864,7 @@ return unless $changed ;
 
 my @sel = map { [$self->{_all_items}[$_] // '', $_] }
 	grep { $self->{local_selected}{$_} }
-	@{$self->{_match_indices}} ;
+	@{$self->{store}->match_indices()} ;
 
 # Callback receives:
 #   $widget, $selections, $changed_idx, $selected_state, $changed_text
@@ -2303,7 +2243,7 @@ $self->{colors} =
 	} ;
 
 my $c       = $self->{colors} ;
-my $tv_name = $self->{tree_view}->get_name() ;
+my $tv_name = $self->{view}->get_name() ;
 my $wb_name = $self->{widget_box}->get_name() ;
 my $bb_name = $self->{bottom_bar} ? $self->{bottom_bar}->get_name() : '' ;
 my $sl_name = $self->{status_label}->get_name() ;
@@ -2371,7 +2311,7 @@ sub _set_loading
 my ($self, $loading) = @_ ;
 
 $self->{loading} = $loading ;
-$self->{scroll_win}->set_sensitive(!$loading) ;
+$self->{view}->set_sensitive(!$loading) ;
 $self->{ok_button}->set_sensitive(!$loading) if $self->{show_buttons} ;
 $self->{status_label}->set_text(msg(MSG_LOADING)) if $loading && $self->{show_status} ;
 }
@@ -2428,7 +2368,7 @@ my ($self, $items, $query) = @_ ;
 $self->_stop_load_timer() ;
 $self->_stop_query_refresh_timer() ;
 $self->{_backend}         = undef ;
-$self->_store_reset() ;
+$self->{store}->reset() ;
 $self->{_match_count}     = 0 ;
 $self->{_total_count}     = 0 ;
 $self->{_fetch_in_flight} = 0 ;
@@ -2616,7 +2556,7 @@ sub get_match_count  { $_[0]->{_match_count} // 0 }
 sub get_total_count  { $_[0]->{_total_count} // 0 }
 sub get_query        { $_[0]->{entry}->get_text() }
 sub query_widget     { $_[0]->{entry} }
-sub list_widget      { $_[0]->{scroll_win} }
+sub list_widget      { $_[0]->{view}->widget() }
 sub status_widget    { $_[0]->{status_label} }
 sub header_widget    { $_[0]->{header_label} }
 sub info_widget      { $_[0]->{info_label} }
@@ -2629,18 +2569,18 @@ sub get_selection
 {
 my ($self) = @_ ;
 
-return [] unless @{$self->{_match_indices}} ;
+return [] unless @{$self->{store}->match_indices()} ;
 
 if ($self->{multi} && %{$self->{local_selected}})
 	{
 	return [
 		map  { [$self->{_all_items}[$_] // '', $_] }
 		grep { $self->{local_selected}{$_} }
-		@{$self->{_match_indices}}
+		@{$self->{store}->match_indices()}
 		] ;
 	}
 
-my $orig_idx = $self->{_match_indices}[$self->{local_pos}] ;
+my $orig_idx = $self->{store}->orig_idx($1) ;
 return [] unless defined $orig_idx ;
 return [[$self->{_all_items}[$orig_idx] // '', $orig_idx]] ;
 }
@@ -2650,7 +2590,7 @@ return [[$self->{_all_items}[$orig_idx] // '', $orig_idx]] ;
 sub get_filtered_list
 {
 my ($self) = @_ ;
-return [map { [$self->{_all_items}[$_] // '', $_] } @{$self->{_match_indices}}] ;
+return [map { [$self->{_all_items}[$_] // '', $_] } @{$self->{store}->match_indices()}] ;
 }
 
 # ------------------------------------------------------------------------------
@@ -2660,18 +2600,18 @@ sub _apply_initial_selection
 my ($self) = @_ ;
 
 return unless @{$self->{initial_selection}} ;
-return unless @{$self->{_match_indices}} ;
+return unless @{$self->{store}->match_indices()} ;
 
 for my $target_idx (@{$self->{initial_selection}})
 	{
 	# Find this original index in the current match window
-	for my $filter_row (0 .. $#{$self->{_match_indices}})
+	for my $filter_row (0 .. ($self->{store}->match_count() - 1))
 		{
-		if ($self->{_match_indices}[$filter_row] == $target_idx)
+		if ($self->{store}->orig_idx($1) == $target_idx)
 			{
 			$self->{local_selected}{$target_idx} = 1 ;
 
-			$self->_store_set_selected($filter_row, 1) ;
+			$self->{store}->set_selected($filter_row, 1) ;
 			last ;
 			}
 		}
@@ -2697,7 +2637,7 @@ if ($self->{multi} && %{$self->{local_selected}})
 	}
 else
 	{
-	my $orig_idx = $self->{_match_indices}[$self->{local_pos}] ;
+	my $orig_idx = $self->{store}->orig_idx($1) ;
 	if (defined $orig_idx)
 		{
 		@sel = ([$self->{_all_items}[$orig_idx] // '', $orig_idx]) ;
@@ -2741,7 +2681,7 @@ my ($self) = @_ ;
 $self->{multi}          = $self->{multi} ? 0 : 1 ;
 $self->{local_selected} = {} ;
 
-$self->{_toggle_col}->set_visible($self->{multi}) if $self->{_toggle_col} ;
+$self->{view}->set_toggle_visible($self->{multi}) if $self->{view} ;
 
 # Rebuild markup to clear any selection highlighting
 $self->_rebuild_store() ;
