@@ -11,11 +11,11 @@ use Gtk3::FzfWidget::Layout ;
 use Gtk3::FzfWidget::FzfBackend ;
 use Gtk3::FzfWidget::SocketBackend ;
 use Gtk3::FzfWidget::Messages qw(msg
-use Gtk3::FzfWidget::Store ;
-our @ISA = qw(Gtk3::FzfWidget::Store) ;
 	MSG_LOADING
 	MSG_MATCH_COUNT
 	MSG_PLACEHOLDER) ;
+use Gtk3::FzfWidget::Store ;
+use Gtk3::FzfWidget::View ;
 
 our $VERSION = '0.01' ;
 
