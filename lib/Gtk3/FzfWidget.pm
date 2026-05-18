@@ -273,7 +273,6 @@ $self->{instance_id}           = ++$widget_seq ;
 $self->{process}               = undef ;
 $self->{_backend}              = undef ;   # FzfBackend instance
 $self->{_all_items}            = [] ;      # all item strings, index = original index
-	$self->{_row_iters}            = [] ;      # store row -> Gtk3::TreeIter (O(1) lookup)
 	$self->{_items_src}            = undef ;   # original items source (arrayref or coderef)
 # _match_indices now owned by store object
 $self->{_match_count}          = 0 ;       # total matches for current query
@@ -285,7 +284,6 @@ $self->{_progress_watch}       = undef ;   # Glib::IO watch on ItemWriter progre
 $self->{_query_refresh_timer}  = undef ;   # fires after query change until mc stabilises
 $self->{layout_obj}            = undef ;
 $self->{entry}                 = undef ;
-$self->{list_store}            = undef ;
 $self->{status_label}          = undef ;
 $self->{info_label}            = undef ;
 $self->{header_label}          = undef ;
@@ -930,10 +928,7 @@ if ($query eq '')
 				: $text ;
 			my $markup  = $self->_make_markup($display, [], 0, undef, $text) ;
 			my $cell_bg = $stripe ? $stripe->[$row % scalar @$stripe] : undef ;
-			my $iter    = $store->append() ;
-			$store->set($iter, 0, $markup, 1, $row, 2, 0,
-				3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
-			$self->{_row_iters}[$row] = $iter ;
+			$self->{store}->append_row($row, $row, $markup, $cell_bg, 0) ;
 			push @{$self->{store}->match_indices()}, $row ;
 			}
 
@@ -1215,10 +1210,10 @@ my $stripe = $self->{row_striping} ;
 for my $row ($old_pos, $new_pos)
 	{
 	next if $row < 0 ;
-	my $orig_idx = $self->{store}->orig_idx($1) ;
+	my $orig_idx = $self->{store}->orig_idx($row) ;
 	next unless defined $orig_idx ;
 
-	next unless $self->{_row_iters}[$row] ;
+	next unless $self->{store}->iter($orig_idx) ;
 
 	my $text    = $self->{_all_items}[$orig_idx] // '' ;
 	my $display = $self->{transform_fn}
@@ -1413,10 +1408,7 @@ $self->{_query_refresh_timer} = Glib::Timeout->add(
 					my $cell_bg = $stripe
 						? $stripe->[$row % scalar @$stripe]
 						: undef ;
-					my $iter = $store->append() ;
-					$store->set($iter, 0, $markup, 1, $orig_idx, 2, 0,
-						3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
-					$self->{_row_iters}[$row] = $iter ;
+					$self->{store}->append_row($row, $orig_idx, $markup, $cell_bg, 0) ;
 					}
 
 				$self->{store}->set_match_indices(\@all_indices) ;
@@ -1538,15 +1530,8 @@ $self->{_backend}->fetch_async($want, sub
 			my $cell_bg = $stripe
 				? $stripe->[$row % scalar @$stripe]
 				: undef ;
-			my $iter = $store->append() ;
-			$store->set($iter,
-				0, $markup,
-				1, $orig_idx,
-				2, ($self->{local_selected}{$orig_idx} ? 1 : 0),
-				3, $cell_bg // '#000000',
-				4, $cell_bg ? 1 : 0,
-				) ;
-			$self->{_row_iters}[$row] = $iter ;
+			$self->{store}->append_row($row, $orig_idx, $markup, $cell_bg,
+				$self->{local_selected}{$orig_idx} // 0) ;
 			}
 
 		$self->_update_status_label() ;
@@ -1569,13 +1554,11 @@ my $n = $self->{store}->match_count() ;
 $self->_dbg("rebuild_store: n=$n query='$query'") ;
 warn "FZFW rebuild_store: n=$n query='$query'\n" if $ENV{FZFW_TRACE} ;
 
-$self->{view}->set_model(undef) ;
-$store->clear() ;
-$self->{_row_iters} = [] ;
-
+# Phase 2: visibility is controlled by the TreeModelFilter.
+# Just update markup for each visible row — no clear, no flicker.
 for my $row (0 .. $n - 1)
 	{
-	my $orig_idx = $self->{store}->orig_idx($1) ;
+	my $orig_idx = $self->{store}->orig_idx($row) ;
 	next unless defined $orig_idx ;
 
 	my $text    = $self->{_all_items}[$orig_idx] // '' ;
@@ -1592,29 +1575,19 @@ for my $row (0 .. $n - 1)
 		? ($c->{cursor_bg} // '#2d6db5')
 		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
-	my $iter = $store->append() ;
-	$store->set($iter,
-		0, $markup,
-		1, $orig_idx,
-		2, ($self->{local_selected}{$orig_idx} ? 1 : 0),
-		3, $cell_bg // '#000000',
-		4, $cell_bg ? 1 : 0,
-		) ;
-	$self->{_row_iters}[$row] = $iter ;
+	$self->{store}->set_row($row, $markup, $cell_bg,
+		$self->{local_selected}{$orig_idx} // 0) ;
 
-	if ($self->{image_fn})
+	if ($self->{image_fn} && !$self->{has_images})
 		{
 		my $pb = $self->{image_fn}->($text, $orig_idx) ;
 		if (defined $pb)
 			{
-			$store->set($iter, 5, $pb) ;
 			$self->{has_images} = 1 ;
 			$self->{view}->show_pixbuf_column() ;
 			}
 		}
 	}
-
-$self->{view}->set_model($self->{store}->model()) ;
 }
 # ------------------------------------------------------------------------------
 # Progress watch — reads item counts written by ItemWriter child via a pipe.
@@ -1739,10 +1712,7 @@ $self->{_load_timer} = Glib::Timeout->add(
 					my $cell_bg = $stripe
 						? $stripe->[$row % scalar @$stripe]
 						: undef ;
-					my $iter = $store->append() ;
-					$store->set($iter, 0, $markup, 1, $row, 2, 0,
-						3, $cell_bg // '#000000', 4, $cell_bg ? 1 : 0) ;
-					$self->{_row_iters}[$row] = $iter ;
+					$self->{store}->append_row($row, $row, $markup, $cell_bg, 0) ;
 					push @{$self->{store}->match_indices()}, $row ;
 					}
 
