@@ -723,7 +723,7 @@ $self->{view}->tv()->signal_connect(
 
 		# path is in filter-model space
 		my $filter_row = $path->to_string() + 0 ;
-		my $orig_idx   = $self->{store}->orig_idx($1) ;
+		my $orig_idx   = $self->{store}->orig_idx($filter_row) ;
 		return unless defined $orig_idx ;
 
 		my $old_pos        = $self->{local_pos} ;
@@ -753,7 +753,7 @@ if ($self->{multi})
 			return 0 unless defined $path ;
 
 			my $filter_row = $path->to_string() + 0 ;
-			my $orig_idx   = $self->{store}->orig_idx($1) ;
+			my $orig_idx   = $self->{store}->orig_idx($filter_row) ;
 			return 0 unless defined $orig_idx ;
 
 			my $old_pos = $self->{local_pos} ;
@@ -797,7 +797,7 @@ if ($self->{on_hover})
 			my ($path, $col, $cx, $cy) = $tv->get_path_at_pos($x, $y) ;
 			return 0 unless defined $path ;
 			my $filter_row = $path->to_string() + 0 ;
-			my $orig_idx   = $self->{store}->orig_idx($1) ;
+			my $orig_idx   = $self->{store}->orig_idx($filter_row) ;
 			return 0 unless defined $orig_idx ;
 			my $text = $self->{_all_items}[$orig_idx] // '' ;
 			my $info = $self->{on_hover}->($self, $text, $orig_idx) ;
@@ -1078,7 +1078,7 @@ if ($ctrl && $keyval == Gtk3::Gdk::KEY_End)
 if ($self->{multi} && $self->_kb_matches('toggle', $keyval, $ctrl, $shift))
 	{
 	my $pos      = $self->{local_pos} ;
-	my $orig_idx = $self->{store}->orig_idx($1) ;
+	my $orig_idx = $self->{store}->orig_idx($pos) ;
 
 	if (defined $orig_idx)
 		{
@@ -1153,7 +1153,7 @@ $self->_scroll_to($new_pos, $old_pos) ;
 
 if ($self->{on_cursor_change})
 	{
-	my $orig_idx = $self->{store}->orig_idx($1) ;
+	my $orig_idx = $self->{store}->orig_idx($self->{local_pos}) ;
 	if (defined $orig_idx)
 		{
 		my $text = $self->{_all_items}[$orig_idx] // '' ;
@@ -1515,7 +1515,7 @@ $self->{_backend}->fetch_async($want, sub
 
 		for my $row ($old_count .. $new_count - 1)
 			{
-			my $orig_idx = $self->{store}->orig_idx($1) ;
+			my $orig_idx = $self->{store}->orig_idx($row) ;
 			next unless defined $orig_idx ;
 			my $text    = $self->{_all_items}[$orig_idx] // '' ;
 			my $display = $self->{transform_fn}
@@ -2551,7 +2551,7 @@ if ($self->{multi} && %{$self->{local_selected}})
 		] ;
 	}
 
-my $orig_idx = $self->{store}->orig_idx($1) ;
+my $orig_idx = $self->{store}->orig_idx($self->{local_pos}) ;
 return [] unless defined $orig_idx ;
 return [[$self->{_all_items}[$orig_idx] // '', $orig_idx]] ;
 }
@@ -2578,7 +2578,7 @@ for my $target_idx (@{$self->{initial_selection}})
 	# Find this original index in the current match window
 	for my $filter_row (0 .. ($self->{store}->match_count() - 1))
 		{
-		if ($self->{store}->orig_idx($1) == $target_idx)
+		if ($self->{store}->orig_idx($filter_row) == $target_idx)
 			{
 			$self->{local_selected}{$target_idx} = 1 ;
 
@@ -2608,7 +2608,7 @@ if ($self->{multi} && %{$self->{local_selected}})
 	}
 else
 	{
-	my $orig_idx = $self->{store}->orig_idx($1) ;
+	my $orig_idx = $self->{store}->orig_idx($self->{local_pos}) ;
 	if (defined $orig_idx)
 		{
 		@sel = ([$self->{_all_items}[$orig_idx] // '', $orig_idx]) ;
