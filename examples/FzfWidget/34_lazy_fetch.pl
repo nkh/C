@@ -42,7 +42,7 @@ my $item_iter = sub
 
 	my @batch = map
 		{
-		sprintf('entry %06d — %s', $_, join(' ', map { ('a'..'z')[rand 26] } 1 .. 8))
+		sprintf('entry %06d — item %d of %d', $_, $_, $TOTAL)
 		}
 		$cursor + 1 .. $end ;
 
