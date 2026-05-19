@@ -1613,12 +1613,7 @@ for my $row (0 .. $n - 1)
 
 $self->{store}->remove_tail($n) ;
 }
-		}
 
-	$self->{store}->append_row($row, $orig_idx, $markup, $cell_bg,
-		$self->{local_selected}{$orig_idx} // 0) ;
-	}
-}
 # ------------------------------------------------------------------------------
 # Progress watch — reads item counts written by ItemWriter child via a pipe.
 # Fires for coderef sources only; gives immediate counter updates without
