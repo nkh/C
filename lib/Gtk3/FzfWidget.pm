@@ -901,24 +901,25 @@ $self->{_fetch_in_flight} = 0 ;
 $self->{_refresh_active}  = 0 ;
 
 $self->{_backend}->cancel() if $self->{_backend}->can('cancel') ;
-
 # When query becomes empty: restore display immediately from cached items
 # without waiting for a fzf HTTP round-trip.
 if ($query eq '')
 	{
 	my $cached = scalar @{$self->{_all_items}} ;
 
-	$self->{store}->reset() ;
+	$self->{store}->clear_match_indices() ;
 	$self->{local_pos} = 0 ;
 
-	# Rebuild from whatever items we have cached.  The load timer will
-	# append more as fzf continues indexing.
+	# Overwrite existing store rows in-place from cache; append if needed.
+	# Never clear the store -- that causes a black-screen flash.
 	if ($cached > 0)
 		{
 		my $show = $cached < $self->{prefetch_buffer} * 2
 			? $cached
 			: $self->{prefetch_buffer} * 2 ;
-		my $stripe = $self->{row_striping} ;
+		my $stripe  = $self->{row_striping} ;
+		my $store_n = $self->{store}->row_count() ;
+		my @new_indices ;
 
 		for my $row (0 .. $show - 1)
 			{
@@ -928,10 +929,19 @@ if ($query eq '')
 				: $text ;
 			my $markup  = $self->_make_markup($display, [], 0, undef, $text) ;
 			my $cell_bg = $stripe ? $stripe->[$row % scalar @$stripe] : undef ;
-			$self->{store}->append_row($row, $row, $markup, $cell_bg, 0) ;
-			push @{$self->{store}->match_indices()}, $row ;
+			if ($row < $store_n)
+				{
+				$self->{store}->set_row($row, $row, $markup, $cell_bg, 0) ;
+				}
+			else
+				{
+				$self->{store}->append_row($row, $row, $markup, $cell_bg, 0) ;
+				}
+			push @new_indices, $row ;
 			}
 
+		$self->{store}->remove_tail($show) ;
+		$self->{store}->set_match_indices(\@new_indices) ;
 		$self->{last_query}   = '' ;
 		$self->{_match_count} = $self->{_total_count} if $self->{_total_count} > 0 ;
 		$self->{_prefetch_at} = $show - $self->{prefetch_buffer} ;
@@ -942,8 +952,9 @@ if ($query eq '')
 		}
 	}
 
-# Non-empty query or no cached items: clear store and ask fzf.
-$self->{store}->reset() ;
+# Non-empty query or no cached items: clear match indices and ask fzf.
+# Do NOT clear the store -- _rebuild_store overwrites rows in-place.
+$self->{store}->clear_match_indices() ;
 $self->{local_pos} = 0 ;
 $self->_update_status_label() ;
 
@@ -1227,7 +1238,7 @@ for my $row ($old_pos, $new_pos)
 		? ($c->{cursor_bg} // '#2d6db5')
 		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
-	$self->{store}->set_row($row, $markup, $cell_bg, $self->{local_selected}{$orig_idx} // 0) ;
+	$self->{store}->set_row($row, $orig_idx, $markup, $cell_bg, $self->{local_selected}{$orig_idx} // 0) ;
 	}
 }
 
@@ -1548,12 +1559,13 @@ $query //= $self->{entry}->get_text() ;
 my $c      = $self->{colors} ;
 my $stripe = $self->{row_striping} ;
 
-my $n = $self->{store}->match_count() ;
-$self->_dbg("rebuild_store: n=$n query='$query'") ;
+my $n       = $self->{store}->match_count() ;
+my $store_n = $self->{store}->row_count() ;
+$self->_dbg("rebuild_store: n=$n store_n=$store_n query='$query'") ;
 warn "FZFW rebuild_store: n=$n query='$query'\n" if $ENV{FZFW_TRACE} ;
 
-$self->{store}->reset() ;
-
+# Overwrite existing rows in-place; append beyond current store size.
+# Remove surplus rows from the tail.  Never clear the whole store.
 for my $row (0 .. $n - 1)
 	{
 	my $orig_idx = $self->{store}->orig_idx($row) ;
@@ -1573,17 +1585,34 @@ for my $row (0 .. $n - 1)
 		? ($c->{cursor_bg} // '#2d6db5')
 		: ($stripe ? $stripe->[$row % scalar @$stripe] : undef) ;
 
+	my $pb ;
 	if ($self->{image_fn})
 		{
-		my $pb = $self->{image_fn}->($text, $orig_idx) ;
+		$pb = $self->{image_fn}->($text, $orig_idx) ;
 		if (defined $pb)
 			{
-			$self->{store}->append_row_pixbuf($row, $orig_idx, $markup, $cell_bg,
-				$self->{local_selected}{$orig_idx} // 0, $pb) ;
 			$self->{has_images} = 1 ;
 			$self->{view}->show_pixbuf_column() ;
-			next ;
 			}
+		}
+
+	if ($row < $store_n)
+		{
+		$self->{store}->set_row($row, $orig_idx, $markup, $cell_bg,
+			$self->{local_selected}{$orig_idx} // 0) ;
+		}
+	else
+		{
+		defined $pb
+			? $self->{store}->append_row_pixbuf($row, $orig_idx, $markup, $cell_bg,
+				$self->{local_selected}{$orig_idx} // 0, $pb)
+			: $self->{store}->append_row($row, $orig_idx, $markup, $cell_bg,
+				$self->{local_selected}{$orig_idx} // 0) ;
+		}
+	}
+
+$self->{store}->remove_tail($n) ;
+}
 		}
 
 	$self->{store}->append_row($row, $orig_idx, $markup, $cell_bg,
